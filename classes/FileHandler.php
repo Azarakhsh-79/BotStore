@@ -33,6 +33,23 @@ class FileHandler
         return $file;
     }
 
+    public function addData(int|string $chatId, array $values, $fileKey = null): void
+    {
+        $data = $this->getAllData($fileKey);
+        foreach ($values as $key => $value) {
+            if (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && !is_array($value)) {
+                $data[$chatId][$key][] = $value;
+            }
+            elseif (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && is_array($value)) {
+                $data[$chatId][$key] = array_merge($data[$chatId][$key], $value);
+            }
+            else {
+                $data[$chatId][$key] = $value;
+            }
+        }
+        $this->saveAllData($data, $fileKey);
+    }
+
     public function saveState(int|string $chatId, mixed $state, $fileKey = null): void
     {
         $data = $this->getAllData($fileKey);
@@ -45,6 +62,8 @@ class FileHandler
         $data = $this->getAllData($fileKey);
         return $data[$chatId]['state'] ?? null;
     }
+
+    
 
     public function addMessageId(int|string $chatId, int|string $messageId, $fileKey = null): void
     {
@@ -77,6 +96,12 @@ class FileHandler
     {
         $data = $this->getAllData($fileKey);
         return $data[$chatId]['message_id'] ?? null;
+    }
+
+    public function getStateData (int|string $chatId, $fileKey = null): int|string|null
+    {
+        $data = $this->getAllData($fileKey);
+        return $data[$chatId]['state_data'] ?? null;
     }
 
     private function getAllData($fileKey = null): array

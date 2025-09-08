@@ -3,30 +3,53 @@ require_once __DIR__ . '/vendor/autoload.php';
 
 use Config\AppConfig;
 
-$config = AppConfig::get();
-$db = $config['database'];
+try {
+    $config = AppConfig::get();
+    $db = $config['database'];
 
-$mysqli = new mysqli($db['host'], $db['username'], $db['password'], $db['database']);
-if ($mysqli->connect_errno) {
-    die("<b>خطا در اتصال به دیتابیس:</b> " . $mysqli->connect_error);
-}
+    $mysqli = new mysqli($db['host'], $db['username'], $db['password'], $db['database']);
+    if ($mysqli->connect_errno) {
+        throw new Exception("❌ خطا در اتصال به دیتابیس: " . $mysqli->connect_error);
+    }
+    $mysqli->set_charset("utf8mb4");
 
+    $sqlFiles = [
+        '01_database_schema.sql' => 'ساختار دیتابیس و جداول',
+        '02_initial_data.sql'    => 'داده‌های اولیه و تنظیمات',
+        '03_sample_data.sql'     => 'داده‌های نمونه برای تست'
+    ];
 
-$sqlFile = __DIR__ . '/sql/01_database_schema.sql';
-$sql = file_get_contents($sqlFile);
-if ($sql === false) {
-    die("<b>فایل SQL پیدا نشد.</b>");
-}
+    echo "🚀 شروع فرآیند نصب دیتابیس...\n";
 
-if ($mysqli->multi_query($sql)) {
-    do {
-        if ($result = $mysqli->store_result()) {
-            $result->free();
+    foreach ($sqlFiles as $fileName => $description) {
+        $filePath = __DIR__ . '/sql/' . $fileName;
+
+        if (!file_exists($filePath)) {
+            throw new Exception("❌ فایل SQL پیدا نشد: {$filePath}");
         }
-    } while ($mysqli->next_result());
-    echo "<b>✅ ساختار دیتابیس و جداول با موفقیت ساخته شد.</b><br>";
-} else {
-    echo "<b>❌ خطا در اجرای SQL:</b> " . $mysqli->error;
-}
 
-$mysqli->close();
+        $sql = file_get_contents($filePath);
+        if ($mysqli->multi_query($sql)) {
+            do {
+                if ($result = $mysqli->store_result()) {
+                    $result->free();
+                }
+            } while ($mysqli->next_result());
+
+            echo "✅ '{$description}' با موفقیت اجرا شد.\n";
+        } else {
+            throw new Exception("❌ خطا در اجرای فایل '{$fileName}': " . $mysqli->error);
+        }
+    }
+
+    echo "🎉 تمام مراحل نصب دیتابیس با موفقیت انجام شد.\n";
+
+    $mysqli->close();
+} catch (Exception $e) {
+    if (PHP_SAPI === 'cli') {
+        echo "\033[31m" . $e->getMessage() . "\033[0m\n";
+    } else {
+        echo "<b style='color:red'>" . $e->getMessage() . "</b><br>";
+    }
+    exit(1);
+}

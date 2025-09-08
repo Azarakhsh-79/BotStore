@@ -1,10 +1,11 @@
 <?php
 require_once __DIR__ . '/../vendor/autoload.php';
+date_default_timezone_set('Asia/Tehran');
 
 use Bot\BotHandler;
 
 $update = json_decode(file_get_contents('php://input'), true);
-error_log("Update: " . print_r($update ,true));
+// error_log("Update: " . print_r($update ,true));
 if (!$update) {
     exit('No update received');
 }

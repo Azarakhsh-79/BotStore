@@ -9,31 +9,40 @@ class Logger
     public static function log(
         string $level,
         string $title,
-        string $message ,
+        string $message,
         array $context = [],
         bool $sendToTelegram = false
     ): void {
         $config = AppConfig::get();
         $botToken = $config['bot']['token'];
+        $chatId   = $config['bot']['log_chat'] ?? '@mybugsram'; // از کانفیگ بخون
+
         $emojis = ['info' => 'ℹ️', 'success' => '✅', 'warning' => '⚠️', 'error' => '❌'];
-        $emoji = $emojis[strtolower($level)] ?? '📝';
+        $emoji  = $emojis[strtolower($level)] ?? '📝';
         $timestamp = date('[Y-m-d H:i:s]');
-        $logText = "$timestamp [$level] $title - $message";
+
+        // حساسیت روی token/password
         foreach ($context as $key => $value) {
             if (stripos($key, 'token') !== false || stripos($key, 'password') !== false) {
                 $context[$key] = '[HIDDEN]';
             }
         }
+
+        // ساخت متن برای فایل لاگ
+        $logText = "$timestamp [$level] $title - $message";
         if (!empty($context)) {
             $logText .= ' | ' . json_encode($context, JSON_UNESCAPED_UNICODE);
         }
+
         $logDir = __DIR__ . '/../log';
         if (!file_exists($logDir)) {
             mkdir($logDir, 0777, true);
         }
         $logFile = $logDir . '/log_' . date('Y-m-d') . '.log';
-        file_put_contents($logFile, $logText . PHP_EOL, FILE_APPEND);
-        if ($sendToTelegram  || !$sendToTelegram) {
+        file_put_contents($logFile, $logText . PHP_EOL . str_repeat('-', 80) . PHP_EOL, FILE_APPEND);
+
+        // فقط اگر فعال بود به تلگرام ارسال کن
+        if ($sendToTelegram) {
             $contextLines = '';
             foreach ($context as $key => $value) {
                 if (is_array($value) || is_object($value)) {
@@ -43,13 +52,16 @@ class Logger
                 }
                 $contextLines .= "🔹 <b>" . htmlspecialchars($key) . ":</b> {$prettyValue}\n";
             }
-            $telegramMessage = "$emoji <b>" . htmlspecialchars($title) . "</b>\n\n" . 
-                htmlspecialchars($message) . "\n\n" . 
-                $contextLines . 
+
+            $telegramMessage = "$emoji <b>" . htmlspecialchars($title) . "</b>\n\n" .
+                htmlspecialchars($message) . "\n\n" .
+                $contextLines .
                 "🕒 <i>" . date('Y-m-d H:i:s') . "</i>";
+
             if (mb_strlen($telegramMessage) > 4000) {
                 $telegramMessage = mb_substr($telegramMessage, 0, 3990) . "\n...\n📌 پیام طولانی‌تر بود!";
             }
+
             try {
                 $ch = curl_init("https://api.telegram.org/bot$botToken/sendMessage");
                 curl_setopt_array($ch, [
@@ -57,7 +69,7 @@ class Logger
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_TIMEOUT => 5,
                     CURLOPT_POSTFIELDS => http_build_query([
-                        "chat_id" => "@mybugsram",
+                        "chat_id" => $chatId,
                         "text" => $telegramMessage,
                         "parse_mode" => "HTML",
                         "disable_web_page_preview" => true
