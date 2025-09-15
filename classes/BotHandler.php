@@ -291,7 +291,7 @@ class BotHandler
             } elseif ($callbackData === 'clear_cart') {
                 $this->db->clearUserCart($this->chatId);
                 $this->Alert("🗑 سبد خرید شما با موفقیت خالی شد.");
-                $this->showCart($messageId); 
+                $this->showCart($messageId);
                 return;
             } elseif ($callbackData === 'complete_shipping_info' || $callbackData === 'edit_shipping_info') {
 
@@ -472,20 +472,122 @@ class BotHandler
                     'reply_markup' => $reply_markup
                 ]);
                 return;
-            } elseif ($callbackData === 'product_confirm_save') {
-                $stateDataJson = $this->fileHandler->getStateData($this->chatId);
+            } elseif ($callbackData === 'product_photos_done') {
+                $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
 
-                if ($stateDataJson) {
-                    $this->createNewProduct($stateDataJson);
+
+                if (empty($stateData['images'])) {
+                    $this->Alert("❌ لطفاً حداقل یک عکس برای محصول خود ارسال کنید.", true);
+                    return;
                 }
+
+                $this->fileHandler->saveState($this->chatId, 'asking_for_variants');
+                $this->sendRequest('editMessageText', [
+                    'chat_id' => $this->chatId,
+                    'message_id' => $messageId,
+                    'text' => "✅ عکس‌ها ثبت شدند. آیا این محصول ویژگی‌های متفاوتی مانند سایز یا رنگ دارد که قیمت یا موجودی متفاوتی داشته باشند؟",
+                    'reply_markup' => ['inline_keyboard' => [
+                        [['text' => '✅ بله، ویژگی دارد', 'callback_data' => 'add_variant']],
+                        [['text' => ' خیر، ویژگی ندارد', 'callback_data' => 'product_variants_done']]
+                    ]]
+                ]);
+                return;
+            } elseif ($callbackData === 'add_variant') {
+                $this->fileHandler->saveState($this->chatId, 'adding_variant_name');
+                $this->sendRequest('editMessageText', [
+                    'chat_id' => $this->chatId,
+                    'message_id' => $messageId,
+                    'text' => "لطفاً نام اولین ویژگی را وارد کنید (مثلاً: سایز L یا رنگ قرمز):",
+                    'reply_markup' => ['inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'product_variants_done']]]]
+                ]);
+                return;
+            } elseif ($callbackData === 'add_another_variant') {
+                $this->fileHandler->saveState($this->chatId, 'adding_variant_name');
+                $this->sendRequest('editMessageText', [
+                    'chat_id' => $this->chatId,
+                    'message_id' => $messageId,
+                    'text' => "لطفاً نام ویژگی بعدی را وارد کنید:",
+                    'reply_markup' => ['inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'product_variants_done']]]]
+                ]);
+                return;
+            } elseif (str_starts_with($callbackData, 'variant_use_price_')) {
+                $priceToSet = (float) str_replace('variant_use_price_', '', $callbackData);
+
+                $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
+                $variantIndex = $stateData['variant_index'] ?? 0;
+                $stateData['variants'][$variantIndex]['price'] = $priceToSet;
+
                 $this->fileHandler->addData($this->chatId, [
-                    'state' => null,
-                    'state_data' => null
+                    'state' => 'adding_variant_stock',
+                    'state_data' => json_encode($stateData)
                 ]);
 
+                // --- ساخت دکمه‌های هوشمند برای موجودی ---
+                $stockKeyboard = [];
+                $baseStock = $stateData['stock'] ?? 0;
+                $stockKeyboard[] = [['text' => '📦 همان موجودی اصلی (' . $baseStock . ')', 'callback_data' => 'variant_use_stock_' . $baseStock]];
+
+                $previousVariants = array_slice($stateData['variants'], 0, $variantIndex);
+                $existingStocks = array_unique(array_column($previousVariants, 'stock'));
+                foreach ($existingStocks as $stock) {
+                    if ($stock != $baseStock) {
+                        $stockKeyboard[] = [['text' => '📦 استفاده از موجودی ' . $stock, 'callback_data' => 'variant_use_stock_' . $stock]];
+                    }
+                }
+                $stockKeyboard[] = [['text' => '❌ لغو افزودن ویژگی', 'callback_data' => 'product_variants_done']];
+                // --- پایان ساخت دکمه‌ها ---
+
+                $this->sendRequest('editMessageText', [
+                    'chat_id' => $this->chatId,
+                    'message_id' => $messageId,
+                    'text' => "✅ قیمت ثبت شد. حالا موجودی این ویژگی را وارد کنید:",
+                    'reply_markup' => ['inline_keyboard' => $stockKeyboard]
+                ]);
+                return;
+            } elseif (str_starts_with($callbackData, 'variant_use_stock_')) {
+                $stockToSet = (int) str_replace('variant_use_stock_', '', $callbackData);
+
+                $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
+                $variantIndex = $stateData['variant_index'] ?? 0;
+                $stateData['variants'][$variantIndex]['stock'] = $stockToSet;
+                $stateData['variant_index'] = $variantIndex + 1;
+
+                $this->fileHandler->addData($this->chatId, [
+                    'state' => 'asking_another_variant',
+                    'state_data' => json_encode($stateData)
+                ]);
+
+                $this->sendRequest('editMessageText', [
+                    'chat_id' => $this->chatId,
+                    'message_id' => $messageId,
+                    'text' => "✅ ویژگی با موفقیت افزوده شد. آیا می‌خواهید ویژگی دیگری اضافه کنید؟",
+                    'reply_markup' => ['inline_keyboard' => [
+                        [['text' => '✅ بله، افزودن ویژگی جدید', 'callback_data' => 'add_another_variant']],
+                        [['text' => ' خیر، ادامه و پیش‌نمایش', 'callback_data' => 'product_variants_done']]
+                    ]]
+                ]);
+                return;
+            } elseif ($callbackData === 'product_variants_done') {
+                $this->fileHandler->saveState($this->chatId, 'adding_product_confirmation');
+                $this->deleteMessage($messageId);
+                $this->showConfirmationPreview();
+                return;
+            } elseif ($callbackData === 'product_confirm_save') {
+                $stateDataJson = $this->fileHandler->getStateData($this->chatId);
+                $stateData = json_decode($stateDataJson, true);
+                if ($stateData) {
+                    $newProductId = $this->db->createNewProduct($stateData);
+                    if ($newProductId) {
+                        $this->Alert("✅ محصول با موفقیت ذخیره شد! در حال انتشار در کانال...", false);
+                        $this->publishProductToChannel($newProductId);
+                    } else {
+                        $this->Alert("❌ خطایی در ذخیره محصول در دیتابیس رخ داد.", true);
+                    }
+                }
+
+                $this->fileHandler->addData($this->chatId, ['state' => null, 'state_data' => null]);
                 $this->fileHandler->saveState($this->chatId, null);
 
-                $this->Alert("✅ محصول با موفقیت ذخیره شد!");
                 $this->deleteMessage($messageId);
                 $this->showProductManagementMenu(null);
 
@@ -545,11 +647,27 @@ class BotHandler
                 $this->showCategoryManagementMenu($messageId);
                 return;
             } elseif ($callbackData === 'admin_category_list') {
-                $this->showCategoryList($messageId);
+                $this->showCategoryList(null, $messageId);
+                return;
+            } elseif ($callbackData === 'admin_category_list_root') {
+                $this->showCategoryList(null, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'admin_list_subcategories_')) {
+                $parentId = (int) str_replace('admin_list_subcategories_', '', $callbackData);
+                $this->showCategoryList($parentId, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'admin_cat_actions_')) {
+                $categoryId = (int) str_replace('admin_cat_actions_', '', $callbackData);
+                $this->reconstructCategoryMessage($categoryId, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'admin_view_category_products_')) {
+                $categoryId = (int) str_replace('admin_view_category_products_', '', $callbackData);
+                $this->showCategoryProductsForAdmin($categoryId, $messageId);
                 return;
             } elseif (str_starts_with($callbackData, 'cart_remove_')) {
                 $productId = (int) str_replace('cart_remove_', '', $callbackData);
-                $isRemoved = $this->db->removeFromCart($this->chatId, $productId);
+                $isRemoved = $this->db->removeProductFromCart($this->chatId, $productId);
+
                 if ($isRemoved) {
                     $this->deleteMessage($messageId);
                     $this->Alert("محصول از سبد خرید شما حذف شد.", false);
@@ -557,27 +675,25 @@ class BotHandler
                     $this->Alert("خطا: محصول مورد نظر در سبد خرید شما یافت نشد.");
                 }
                 return;
-            } elseif (str_starts_with($callbackData, 'edit_cart_increase_')) {
-                $productId = (int) str_replace('edit_cart_increase_', '', $callbackData);
-                $currentQuantity = $this->db->getCartItemQuantity($this->chatId, $productId);
+                // این دو بلوک را در handleCallbackQuery در فایل BotHandler.php جایگزین کنید
 
-                if ($currentQuantity > 0) {
-                    $this->db->updateCartQuantity($this->chatId, $productId, $currentQuantity + 1);
-                    $this->refreshCartItemCard($productId, $messageId);
-                }
-                return;
-            } elseif (str_starts_with($callbackData, 'edit_cart_decrease_')) {
-                $productId = (int) str_replace('edit_cart_decrease_', '', $callbackData);
-                $currentQuantity = $this->db->getCartItemQuantity($this->chatId, $productId);
+            } elseif (str_starts_with($callbackData, 'cart_increase_')) {
+                $productId = (int) str_replace('cart_increase_', '', $callbackData);
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $fromCategoryId = $returnContext['category_id'] ?? null;
+                $fromPage = $returnContext['page'] ?? null;
 
-                if ($currentQuantity > 0) {
-                    $this->db->updateCartQuantity($this->chatId, $productId, $currentQuantity - 1);
-                    $this->refreshCartItemCard($productId, $messageId);
-                }
+                // ۱. دریافت تعداد فعلی
+                $currentQuantity = $this->db->getCartItemQuantity($this->chatId, $productId, null);
+                // ۲. فراخوانی متد جدید و یکپارچه برای تنظیم تعداد جدید
+                $this->db->setCartItemQuantity($this->chatId, $productId, null, $currentQuantity + 1);
+
+                $this->Alert("✅ یک عدد اضافه شد", false);
+                $this->showUserSingleProductCard($productId, $fromCategoryId, $fromPage, $messageId);
                 return;
             } elseif (str_starts_with($callbackData, 'edit_cart_remove_')) {
-                $productId = (int) str_replace('edit_cart_remove_', '', $callbackData);
-                $isRemoved = $this->db->removeFromCart($this->chatId, $productId);
+                $cartItemId = (int) str_replace('edit_cart_remove_', '', $callbackData);
+                $isRemoved = $this->db->removeFromCart($cartItemId);
 
                 if ($isRemoved) {
                     $this->Alert("محصول از سبد خرید شما حذف شد.", false);
@@ -586,78 +702,366 @@ class BotHandler
                     $this->Alert("خطا: محصول در سبد خرید یافت نشد.");
                 }
                 return;
-            } elseif (str_starts_with($callbackData, 'cart_increase_')) {
-                $productId = (int) str_replace('cart_increase_', '', $callbackData);
-                $isAdded = $this->db->addToCart($this->chatId, $productId, 1);
-
-                if ($isAdded) {
-                    $this->refreshProductCard($productId, $messageId);
-                    $this->Alert("✅ یک عدد اضافه شد", false); 
-                } else {
-                    $this->Alert("خطا در افزایش تعداد محصول.");
-                }
-
-                return;
+           
             } elseif (str_starts_with($callbackData, 'cart_decrease_')) {
                 $productId = (int) str_replace('cart_decrease_', '', $callbackData);
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $fromCategoryId = $returnContext['category_id'] ?? null;
+                $fromPage = $returnContext['page'] ?? null;
+
                 $currentQuantity = $this->db->getCartItemQuantity($this->chatId, $productId);
                 if ($currentQuantity > 0) {
-                    $this->db->updateCartQuantity($this->chatId, $productId, $currentQuantity - 1);
-
-                    $this->refreshProductCard($productId, $messageId);
+                    $this->db->updateCartQuantityByProduct($this->chatId, $productId, $currentQuantity - 1);
                     $this->Alert("از سبد خرید کم شد", false);
+                    $this->showUserSingleProductCard($productId, $fromCategoryId, $fromPage, $messageId);
                 }
                 return;
             }elseif (str_starts_with($callbackData, 'category_')) {
-                $categoryId = (int) str_replace('category_', '', $callbackData);
-                $this->showUserProductList($categoryId, 1, $messageId);
+                $parts = explode('_', $callbackData);
+                $categoryId = (int) end($parts);
+                $page = 1;
+
+                $subcategories = $this->db->getSubcategories($categoryId);
+
+                if (empty($subcategories)) {
+                    $this->showUserProductList($categoryId, $page, $messageId);
+                } else {
+                    $this->showSubcategoryMenu($categoryId, $messageId);
+                }
                 return;
             } elseif (str_starts_with($callbackData, 'user_list_products_cat_')) {
                 sscanf($callbackData, "user_list_products_cat_%d_page_%d", $categoryId, $page);
                 if ($categoryId && $page) {
-                    $this->showUserProductList($categoryId, $page, $messageId);
+                    if (isset($callbackQuery['message']['photo'])) {
+                        $this->deleteMessage($messageId);
+                        $this->showUserProductList($categoryId, $page, null);
+                    } else {
+                        $this->showUserProductList($categoryId, $page, $messageId);
+                    }
+                }
+                return;
+            } elseif (str_starts_with($callbackData, 'user_view_product_')) {
+                sscanf($callbackData, "user_view_product_%d_cat_%d_page_%d", $productId, $fromCategoryId, $fromPage);
+                if ($productId) {
+                    $this->deleteMessage($messageId);
+                    $this->showUserSingleProductCard($productId, $fromCategoryId, $fromPage, null);
                 }
                 return;
             } elseif (str_starts_with($callbackData, 'toggle_favorite_')) {
                 $productId = (int) str_replace('toggle_favorite_', '', $callbackData);
-                $product = $this->db->getProductById($productId);
-                if (!$product) {
-                    $this->Alert("❌ محصول یافت نشد.");
-                    return;
-                }
+
+                // *** ۱. خواندن اطلاعات زمینه از فایل ***
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $fromCategoryId = $returnContext['category_id'] ?? null;
+                $fromPage = $returnContext['page'] ?? null;
 
                 $message = "";
                 if ($this->db->isProductInFavorites($this->chatId, $productId)) {
                     $this->db->removeFavorite($this->chatId, $productId);
-                    $message = "از علاقه‌مندی‌ها حذف شد.";
+                    $message = "از علاقه مندی ها حذف شد.";
                 } else {
                     $this->db->addFavorite($this->chatId, $productId);
-                    $message = "به علاقه‌مندی‌ها اضافه شد.";
+                    $message = "به علاقه مندی ها اضافه شد.";
                 }
 
-                $this->refreshProductCard($productId, $messageId);
                 $this->Alert("❤️ " . $message, false);
-
+                $this->showUserSingleProductCard($productId, $fromCategoryId, $fromPage, $messageId);
                 return;
-            } elseif (str_starts_with($callbackData, 'add_to_cart_')) {
-                $productId = (int) str_replace('add_to_cart_', '', $callbackData);
-
-                $product = $this->db->getProductById($productId);
-
-                if (!$product || ($product['stock'] ?? 0) <= 0) {
-                    $this->Alert("❌ متاسفانه موجودی این محصول به اتمام رسیده است.");
-                    return;
-                }
-
-                $isAdded = $this->db->addToCart($this->chatId, $productId, 1);
-
-                if ($isAdded) {
-                    $this->Alert("✅ به سبد خرید اضافه شد", false);
-                    $this->refreshProductCard($productId, $messageId);
+            } elseif (str_starts_with($callbackData, 'view_product_images_')) {
+                $productId = (int) str_replace('view_product_images_', '', $callbackData);
+                $this->sendRequest("answerCallbackQuery", ["callback_query_id" => $this->callbackQueryId, "text" => "در حال پردازش ..."]);
+                $this->deleteMessage($messageId);
+                $this->showProductImages($productId); 
+                return;
+            } elseif (str_starts_with($callbackData, 'view_product_')) {
+                $productId = (int) str_replace('view_product_', '', $callbackData);
+                $galleryMessageIds = $this->fileHandler->getMessageIds($this->chatId);
+                if (!empty($galleryMessageIds)) {
+                    $this->deleteMessages($galleryMessageIds);
+                    $this->fileHandler->clearMessageIds($this->chatId);
                 } else {
-                    $this->Alert("خطا در افزودن محصول به سبد خرید.");
+                    $this->deleteMessage($messageId);
                 }
 
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $fromCategoryId = $returnContext['category_id'] ?? null;
+                $fromPage = $returnContext['page'] ?? null;
+                $this->showUserSingleProductCard($productId, $fromCategoryId, $fromPage, null);
+                return;
+            } elseif (str_starts_with($callbackData, 'edit_cart_remove_item_')) {
+                $cartItemId = (int) str_replace('edit_cart_remove_item_', '', $callbackData);
+                $isRemoved = $this->db->removeFromCart($cartItemId);
+
+                if ($isRemoved) {
+                    $this->Alert("✅ آیتم از سبد خرید شما حذف شد.", false);
+                    $this->deleteMessage($messageId);
+                } else {
+                    $this->Alert("خطا: آیتم در سبد خرید یافت نشد.");
+                }
+                return;
+            
+            } elseif (str_starts_with($callbackData, 'open_quantity_manager_')) {
+                $productId = (int) str_replace('open_quantity_manager_', '', $callbackData);
+                if ($productId) {
+                    $mainCartItems = $this->db->getUserCart($this->chatId);
+                    $tempCart = [];
+                    foreach ($mainCartItems as $item) {
+                        if ($item['product_id'] == $productId) {
+                            $variantId = $item['variant_id'] ?? 0;
+                            $tempCart[$variantId] = $item['quantity'];
+                        }
+                    }
+                    $this->fileHandler->addData($this->chatId, [
+                        'state_data' => json_encode(['temp_quantity_cart' => $tempCart])
+                    ]);
+                    $this->promptQuantityManager($productId, $messageId);
+                }
+                return;
+            } elseif (str_starts_with($callbackData, 'quantity_adjust_')) {
+                // این بلوک هر دو دکمه + و - را برای هر دو نوع محصول مدیریت می‌کند
+                $productId = null;
+                $variantId = null; // می‌تواند 0 برای محصول ساده باشد
+                $change = str_starts_with($callbackData, 'quantity_adjust_inc_') ? 1 : -1;
+                sscanf($callbackData, "quantity_adjust_%*3s_%d_%d", $variantId, $productId);
+
+                if ($productId === null || $variantId === null) return;
+
+                $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
+                $tempCart = $stateData['temp_quantity_cart'] ?? [];
+                $currentQuantity = $tempCart[$variantId] ?? 0;
+
+                if ($change > 0) {
+                    $product = $this->db->getProductById($productId);
+                    if (!$product) {
+                        $this->Alert("خطا: محصول یافت نشد.", true);
+                        return;
+                    }
+
+                    $stock = 0;
+                    if ($variantId == 0) {
+                        $stock = (int)$product['stock'];
+                    } else { 
+                        foreach ($product['variants'] as $variant) {
+                            if ($variant['id'] == $variantId) {
+                                $stock = (int)$variant['stock'];
+                                break;
+                            }
+                        }
+                    }
+
+                    if ($currentQuantity >= $stock) {
+                        $this->Alert("⚠️ شما به حداکثر موجودی این کالا رسیده‌اید.", false);
+                        return;
+                    }
+                }
+
+                $newQuantity = max(0, $currentQuantity + $change);
+
+                $tempCart[$variantId] = $newQuantity;
+                $stateData['temp_quantity_cart'] = array_filter($tempCart); // حذف آیتم‌های با تعداد صفر
+                $this->fileHandler->addData($this->chatId, ['state_data' => json_encode($stateData)]);
+
+                $this->promptQuantityManager($productId, $messageId); // رفرش منو
+                return;
+            } elseif (str_starts_with($callbackData, 'quantity_confirm_')) {
+                // این بلوک دکمه تایید نهایی را برای هر دو نوع محصول مدیریت می‌کند
+                $productId = (int) str_replace('quantity_confirm_', '', $callbackData);
+                if (!$productId) return;
+
+                $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
+                $tempCart = $stateData['temp_quantity_cart'] ?? [];
+
+                $this->db->removeProductFromCart($this->chatId, $productId); // حذف مقادیر قبلی
+
+                $itemsAddedCount = 0;
+                foreach ($tempCart as $variantId => $quantity) {
+                    if ($quantity > 0) {
+                        $actualVariantId = ($variantId == 0) ? null : $variantId;
+                        $this->db->addToCart($this->chatId, $productId, $actualVariantId, $quantity);
+                        $itemsAddedCount += $quantity;
+                    }
+                }
+
+                $this->Alert("✅ سبد خرید با موفقیت به‌روزرسانی شد.", false);
+
+                unset($stateData['temp_quantity_cart']);
+                $this->fileHandler->addData($this->chatId, ['state_data' => json_encode($stateData)]);
+
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $this->showUserSingleProductCard($productId, $returnContext['category_id'] ?? null, $returnContext['page'] ?? null, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'edit_cart_item_')) {
+                // این بلوک دکمه‌های + و - را در سبد موقت مدیریت می‌کند
+                $identifier = null;
+                $productId = null;
+                $change = str_starts_with($callbackData, 'edit_cart_item_inc_') ? 1 : -1;
+                sscanf($callbackData, "edit_cart_item_%*3s_%s_%d", $identifier, $productId);
+
+                if (!$identifier || !$productId) return;
+
+                $tempEditCart = $this->fileHandler->getData($this->chatId, 'edit_cart_state') ?? [];
+                $currentQuantity = $tempEditCart[$identifier] ?? 0;
+
+                // کنترل موجودی انبار
+                if ($change > 0) {
+                    $product = $this->db->getProductById($productId);
+                    $stock = 0;
+                    if (str_starts_with($identifier, 'new_')) { // ویژگی جدید
+                        $variantId = (int)str_replace('new_', '', $identifier);
+                        foreach ($product['variants'] as $v) if ($v['id'] == $variantId) $stock = (int)$v['stock'];
+                    } else { // آیتم موجود در سبد یا محصول ساده
+                        $userCart = $this->db->getUserCart($this->chatId);
+                        $itemData = null;
+                        foreach ($userCart as $item) if ($item['cart_item_id'] == $identifier) $itemData = $item;
+
+                        if ($itemData && empty($itemData['variant_id'])) $stock = (int)$product['stock'];
+                        else if ($itemData) foreach ($product['variants'] as $v) if ($v['id'] == $itemData['variant_id']) $stock = (int)$v['stock'];
+                    }
+
+                    if ($currentQuantity >= $stock) {
+                        $this->Alert("⚠️ شما به حداکثر موجودی این کالا رسیده‌اید.", false);
+                        return;
+                    }
+                }
+
+                $newQuantity = max(0, $currentQuantity + $change);
+
+                $tempEditCart[$identifier] = $newQuantity;
+                $this->fileHandler->addData($this->chatId, ['edit_cart_state' => array_filter($tempEditCart)]);
+
+                $this->sendEditableCartCard($productId, $messageId);
+                return;
+            }  elseif ($callbackData === 'edit_cart_confirm_all') {
+                $tempEditCart = $this->fileHandler->getData($this->chatId, 'edit_cart_state') ?? [];
+                $userCart = $this->db->getUserCart($this->chatId); // خواندن سبد اصلی یک بار
+
+                // ساخت یک مپ برای پیدا کردن productId از روی variantId
+                $variantToProductMap = [];
+                foreach($userCart as $item) {
+                    if($item['variant_id']) $variantToProductMap[$item['variant_id']] = $item['product_id'];
+                }
+
+                foreach ($tempEditCart as $identifier => $quantity) {
+                    if (str_starts_with($identifier, 'new_')) {
+                        if ($quantity > 0) {
+                            $variantId = (int)str_replace('new_', '', $identifier);
+                            $productId = $variantToProductMap[$variantId] ?? null; // پیدا کردن productId
+                            if ($productId) {
+                                $this->db->addToCart($this->chatId, $productId, $variantId, $quantity);
+                            }
+                        }
+                    } else {
+                        $cartItemId = (int)$identifier;
+                        $this->db->updateCartQuantity($cartItemId, $quantity);
+                    }
+                }
+
+                $this->fileHandler->addData($this->chatId, ['edit_cart_state' => null]);
+                $this->Alert("✅ سبد خرید با موفقیت به‌روزرسانی شد.", false);
+                $this->showCart(null);
+                return;
+            
+            } elseif ($callbackData === 'edit_cart_cancel_all') {
+                // انصراف: سبد موقت را پاک کرده و به فاکتور بازمی‌گردد
+                $this->fileHandler->addData($this->chatId, ['edit_cart_state' => null]);
+                $this->showCart(null);
+                return;
+            }
+             elseif (str_starts_with($callbackData, 'quantity_manager_back_')) {
+                // این بلوک دکمه بازگشت را مدیریت می‌کند
+                $productId = (int) str_replace('quantity_manager_back_', '', $callbackData);
+                if (!$productId) return;
+
+                $this->fileHandler->addData($this->chatId, ['state_data' => null]); // پاک کردن سبد موقت
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $this->deleteMessage($messageId);
+                $this->showUserSingleProductCard($productId, $returnContext['category_id'] ?? null, $returnContext['page'] ?? null, null);
+                return;
+            
+            }elseif (str_starts_with($callbackData, 'view_product_back_from_variant_')) {
+                $productId = (int) str_replace('view_product_back_from_variant_', '', $callbackData);
+                if (!$productId) return;
+                $returnContext = $this->fileHandler->getData($this->chatId, 'product_view_context');
+                $fromCategoryId = $returnContext['category_id'] ?? null;
+                $fromPage = $returnContext['page'] ?? null;
+                $this->showUserSingleProductCard($productId, $fromCategoryId, $fromPage, $messageId);
+                return;
+            
+           
+            } elseif (strpos($callbackData, 'cancel_edit_category_') === 0) {
+                $categoryId = (int) str_replace('cancel_edit_category_', '', $callbackData);
+                $this->fileHandler->saveState($this->chatId, null);
+                $this->reconstructCategoryMessage($categoryId, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'toggle_cat_status_')) {
+                $categoryId = (int) str_replace('toggle_cat_status_', '', $callbackData);
+                $category = $this->db->getCategoryById($categoryId);
+                if ($category) {
+                    $newStatus = !(bool)$category['is_active'];
+                    $this->db->updateCategoryStatus($categoryId, $newStatus);
+                    $this->Alert($newStatus ? "✅ دسته بندی فعال شد." : "✅ دسته بندی غیرفعال شد.", false);
+
+                    $this->reconstructCategoryMessage($categoryId, $messageId);
+                }
+                return;
+            } elseif (str_starts_with($callbackData, 'move_category_up_')) {
+                $categoryId = (int) str_replace('move_category_up_', '', $callbackData);
+                if ($this->db->moveCategory($categoryId, 'up')) {
+                    $this->Alert("✅ جابجا شد.", false);
+                    $category = $this->db->getCategoryById($categoryId);
+                    $this->showCategoryList($category['parent_id'], $messageId);
+                } else {
+                    $this->Alert("❌ امکان جابجایی بیشتر وجود ندارد.", false);
+                }
+                return;
+            } elseif (str_starts_with($callbackData, 'move_category_down_')) {
+                $categoryId = (int) str_replace('move_category_down_', '', $callbackData);
+                if ($this->db->moveCategory($categoryId, 'down')) {
+                    $this->Alert("✅ جابجا شد.", false);
+                    $category = $this->db->getCategoryById($categoryId);
+                    $this->showCategoryList($category['parent_id'], $messageId);
+                } else {
+                    $this->Alert("❌ امکان جابجایی بیشتر وجود ندارد.", false);
+                }
+                return;
+            } elseif (str_starts_with($callbackData, 'move_category_')) {
+                $categoryId = (int) str_replace('move_category_', '', $callbackData);
+                $this->fileHandler->saveState($this->chatId, 'moving_category_' . $categoryId);
+                $this->promptForNewParentCategory(null, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'select_new_parent_')) {
+                $state = $this->fileHandler->getState($this->chatId);
+                if (!str_starts_with($state, 'moving_category_')) return;
+
+                $movingCategoryId = (int)str_replace('moving_category_', '', $state);
+
+                if (str_starts_with($callbackData, 'select_new_parent_nav_')) {
+                    $parentId = (int) str_replace('select_new_parent_nav_', '', $callbackData);
+                    $this->promptForNewParentCategory($parentId, $messageId);
+                } elseif (str_starts_with($callbackData, 'select_new_parent_confirm_')) {
+                    $newParentIdInt = (int) str_replace('select_new_parent_confirm_', '', $callbackData);
+                    $newParentId = ($newParentIdInt === 0) ? null : $newParentIdInt;
+
+                    if ($movingCategoryId === $newParentId) {
+                        $this->Alert("❌ خطا: یک دسته بندی نمی تواند والد خودش باشد.");
+                        return;
+                    }
+
+                    $result = $this->db->updateCategoryParent($movingCategoryId, $newParentId);
+
+                    if ($result === true) {
+                        $this->Alert("✅ دسته بندی با موفقیت جابجا شد.", false);
+                        $this->fileHandler->saveState($this->chatId, '');
+
+                        $this->reconstructCategoryMessage($movingCategoryId, $messageId);
+                    } elseif ($result === 'circular_dependency') {
+                        $this->Alert("❌ خطا: نمی توانید یک دسته بندی را به زیرشاخه های خودش منتقل کنید.");
+                    } elseif ($result === 'has_products') {
+                        $this->Alert("❌ خطا: والد جدید نمی تواند محصول داشته باشد.");
+                    } else {
+                        $this->Alert("❌ خطایی در جابجایی رخ داد.");
+                    }
+                }
                 return;
             } elseif (strpos($callbackData, 'admin_edit_category_') === 0) {
                 $categoryId = (int) str_replace('admin_edit_category_', '', $callbackData);
@@ -670,33 +1074,61 @@ class BotHandler
                     $res = $this->sendRequest("editMessageText", [
                         "chat_id" => $this->chatId,
                         "message_id" => $messageId,
-                        "text" => "لطفاً نام جدید دسته‌بندی را وارد کنید: {$category['name']}",
+                        "text" => "لطفاً نام جدید دسته بندی را وارد کنید:\n {$category['name']}",
                         "reply_markup" => [
                             "inline_keyboard" => [
-                                [["text" => "🔙 بازگشت", "callback_data" => "admin_manage_categories"]]
+                                [["text" => "❌ انصراف", "callback_data" => "cancel_edit_category_" . $categoryId]]
                             ]
                         ]
                     ]);
                     $this->fileHandler->saveMessageId($this->chatId, $res['result']['message_id'] ?? null);
                 } else {
-                    $this->Alert("دسته‌بندی یافت نشد.");
+                    $this->Alert("دسته بندی یافت نشد.");
                 }
             } elseif (strpos($callbackData, 'admin_delete_category_') === 0) {
                 $categoryId = (int) str_replace('admin_delete_category_', '', $callbackData);
+                $this->promptForDeleteConfirmation($categoryId, $messageId);
+                return;
+            } elseif (strpos($callbackData, 'confirm_delete_category_') === 0) {
+                $categoryId = (int) str_replace('confirm_delete_category_', '', $callbackData);
 
-                $category = $this->db->getCategoryById($categoryId);
-                if (!$category) {
-                    $this->Alert("دسته‌بندی یافت نشد.");
-                    return;
-                }
+                $result = $this->db->deleteCategoryById($categoryId);
 
-                $isDeleted = $this->db->deleteCategoryById($categoryId);
-                if ($isDeleted) {
-                    $this->Alert("دسته‌بندی با موفقیت حذف شد.");
-                    $this->deleteMessage($messageId);
+                if ($result === true) {
+                    $this->Alert("✅ دسته‌بندی با موفقیت حذف شد.");
+                    $this->showCategoryManagementMenu($messageId);
+                } elseif ($result === 'has_products') {
+                    $this->Alert("❌ این دسته‌بندی به دلیل داشتن محصول قابل حذف نیست.");
+                    $this->showCategoryManagementMenu($messageId);
                 } else {
-                    $this->Alert("خطا در حذف دسته‌بندی. لطفاً دوباره تلاش کنید.");
+                    $this->Alert("❌ خطایی در هنگام حذف رخ داد.");
+                    $this->showCategoryManagementMenu($messageId);
                 }
+                return;
+            } elseif (str_starts_with($callbackData, 'prod_cat_nav_')) {
+                $categoryId = (int) str_replace('prod_cat_nav_', '', $callbackData);
+                $subcategories = $this->db->getSubcategories($categoryId);
+
+                if (empty($subcategories)) {
+                    $this->fileHandler->addData($this->chatId, [
+                        'state' =>  'adding_product_name',
+                        'state_data' => json_encode(['category_id' => $categoryId])
+                    ]);
+
+                    $res = $this->sendRequest("editMessageText", [
+                        'chat_id' => $this->chatId,
+                        'message_id' => $messageId,
+                        'text' => "✅ دسته بندی نهایی انتخاب شد.\n\nحالا لطفاً نام محصول را وارد کنید:",
+                        'parse_mode' => 'HTML',
+                        'reply_markup' => [
+                            'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']]]
+                        ]
+                    ]);
+                    $this->fileHandler->saveMessageId($this->chatId, $res['result']['message_id'] ?? null);
+                } else {
+                    $this->showCategorySelectionForProduct($categoryId, $messageId);
+                }
+                return;
             } elseif (strpos($callbackData, 'product_cat_select_') === 0) {
                 $categoryId = (int) str_replace('product_cat_select_', '', $callbackData);
 
@@ -708,7 +1140,7 @@ class BotHandler
                 $res = $this->sendRequest("editMessageText", [
                     'chat_id' => $this->chatId,
                     'message_id' => $messageId,
-                    'text' => "✅ دسته‌بندی انتخاب شد.\n\nحالا لطفاً نام محصول را وارد کنید:",
+                    'text' => "✅ دسته بندی انتخاب شد.\n\nحالا لطفاً نام محصول را وارد کنید:",
                     'parse_mode' => 'HTML',
                     'reply_markup' => [
                         'inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']]]
@@ -723,7 +1155,7 @@ class BotHandler
                 ]);
                 $this->showProductManagementMenu($messageId);
             } elseif ($callbackData === 'admin_add_product') {
-                $this->promptForProductCategory($messageId);
+                $this->showCategorySelectionForProduct(null, $messageId);
             } elseif ($callbackData === 'admin_product_list') {
                 $this->promptUserForCategorySelection($messageId);
             } elseif (strpos($callbackData, 'admin_delete_product_') === 0) {
@@ -819,7 +1251,7 @@ class BotHandler
                 $res = $this->sendRequest("editMessageText", [
                     "chat_id" => $this->chatId,
                     "message_id" => $messageId,
-                    "text" => "لطفاً نام دسته‌بندی جدید را وارد کنید:",
+                    "text" => "لطفاً نام دسته بندی جدید را وارد کنید:",
                     "reply_markup" =>
                     [
                         "inline_keyboard" => [
@@ -828,6 +1260,45 @@ class BotHandler
                     ]
                 ]);
                 $this->fileHandler->saveMessageId($this->chatId, $res['result']['message_id'] ?? null);
+            } elseif ($callbackData === 'admin_add_category_main') {
+                $this->fileHandler->saveState($this->chatId, 'adding_category_name_null'); // null for parent_id
+                $this->sendRequest("editMessageText", [
+                    "chat_id" => $this->chatId,
+                    "message_id" => $messageId,
+                    "text" => "لطفاً نام دسته بندی اصلی جدید را وارد کنید:",
+                    "reply_markup" => ["inline_keyboard" => [[["text" => "🔙 بازگشت", "callback_data" => "admin_manage_categories"]]]]
+                ]);
+                return;
+            } elseif ($callbackData === 'admin_add_subcategory_select_parent') {
+                $this->promptForParentCategory(null, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'select_parent_nav_')) {
+                $parentId = (int) str_replace('select_parent_nav_', '', $callbackData);
+                $this->promptForParentCategory($parentId, $messageId);
+                return;
+            } elseif (str_starts_with($callbackData, 'select_parent_confirm_')) {
+                $parentId = (int) str_replace('select_parent_confirm_', '', $callbackData);
+                $this->fileHandler->saveState($this->chatId, 'adding_category_name_' . $parentId);
+                $this->sendRequest("editMessageText", [
+                    "chat_id" => $this->chatId,
+                    "message_id" => $messageId,
+                    "text" => "لطفاً نام زیردسته جدید را وارد کنید:",
+                    "reply_markup" => ["inline_keyboard" => [[["text" => "🔙 بازگشت", "callback_data" => "select_parent_nav_" . $parentId]]]]
+                ]);
+                return;
+            } elseif (str_starts_with($callbackData, 'select_parent_category_')) {
+                $parentId = (int) str_replace('select_parent_category_', '', $callbackData);
+                $this->fileHandler->saveState($this->chatId, 'adding_category_name_' . $parentId);
+                $res =  $this->sendRequest("editMessageText", [
+                    "chat_id" => $this->chatId,
+                    "message_id" => $messageId,
+                    "text" => "لطفاً نام زیردسته جدید را وارد کنید:",
+                    "reply_markup" => [
+                        "inline_keyboard" => [[["text" => "🔙 بازگشت", "callback_data" => "admin_add_subcategory_select_parent"]]]
+                    ]
+                ]);
+                $this->fileHandler->saveMessageId($this->chatId, $res['result']['message_id']) ?? '';
+                return;
             } else {
                 $this->sendRequest("answerCallbackQuery", [
                     "callback_query_id" => $this->callbackQueryId,
@@ -852,10 +1323,10 @@ class BotHandler
         $state = $this->fileHandler->getState($this->chatId) ?? null;
 
         try {
-           
+
             // مدیریت دستور /start
             if (str_starts_with($this->text, "/start")) {
-                $this->deleteMessage($this->messageId);
+
                 $this->fileHandler->addData($this->chatId, [
                     'state' => null,
                     'state_data' => null
@@ -863,7 +1334,7 @@ class BotHandler
                 $parts = explode(' ', $this->text);
                 if (isset($parts[1]) && str_starts_with($parts[1], 'product_')) {
                     $productId = (int) str_replace('product_', '', $parts[1]);
-                    $this->showSingleProduct($productId);
+                    $this->showUserSingleProductCard($productId, null, null, null);
                 } else {
                     $this->MainMenu();
                 }
@@ -885,7 +1356,7 @@ class BotHandler
                 return;
             }
 
-            // --- مدیریت وضعیت‌ها (States) ---
+            // --- مدیریت وضعیت ها (States) ---
 
             // وضعیت: در انتظار رسید پرداخت
             if (str_starts_with($state, 'awaiting_receipt_')) {
@@ -909,12 +1380,33 @@ class BotHandler
                 return;
             }
 
-            // وضعیت: در حال ویرایش نام دسته‌بندی
+            // وضعیت: در حال افزودن دسته بندی جدید
+            if (str_starts_with($state, "adding_category_name_")) {
+                $categoryName = trim($this->text);
+                $this->deleteMessage($this->messageId);
+                if (empty($categoryName)) {
+                    $this->Alert("نام دسته بندی نمی تواند خالی باشد.");
+                    return;
+                }
+
+                $parentIdStr = str_replace('adding_category_name_', '', $state);
+                $parentId = ($parentIdStr === 'null') ? null : (int)$parentIdStr;
+                if ($this->db->createNewCategory($categoryName, $parentId)) {
+                    $messageId = $this->fileHandler->getMessageId($this->chatId);
+                    $this->fileHandler->saveState($this->chatId, '');
+                    $this->Alert("✅ دسته بندی جدید با موفقیت ایجاد شد.", true, $messageId);
+                    $this->showCategoryManagementMenu($messageId);
+                } else {
+                    $this->Alert("خطا در ایجاد دسته بندی.");
+                }
+                return;
+            }
+            // وضعیت: در حال ویرایش نام دسته بندی
             if (str_starts_with($state, 'editing_category_name_')) {
                 $categoryName = trim($this->text);
                 $this->deleteMessage($this->messageId);
                 if (empty($categoryName)) {
-                    $this->Alert("نام دسته‌بندی نمی‌تواند خالی باشد.");
+                    $this->Alert("نام دسته بندی نمی تواند خالی باشد.");
                     return;
                 }
 
@@ -925,30 +1417,19 @@ class BotHandler
                         'state_data' => null
                     ]);
                     $messageId = $this->fileHandler->getMessageId($this->chatId);
-                    $this->sendRequest("editMessageText", [
-                        "chat_id" => $this->chatId,
-                        "message_id" => $messageId,
-                        "text" => "دسته‌بندی با موفقیت ویرایش شد: {$categoryName}",
-                        "reply_markup" => [
-                            "inline_keyboard" => [
-                                [
-                                    ['text' => '✏️ ویرایش', 'callback_data' => 'admin_edit_category_' . $categoryId],
-                                    ['text' => '🗑 حذف', 'callback_data' => 'admin_delete_category_' . $categoryId]
-                                ]
-                            ]
-                        ]
-                    ]);
+
+                    $this->reconstructCategoryMessage($categoryId, $messageId);
                 } else {
-                    $this->Alert("خطا در ویرایش دسته‌بندی.");
+                    $this->Alert("خطا در ویرایش دسته بندی.");
                 }
                 return;
             }
 
-            // وضعیت: در حال افزودن دسته‌بندی جدید
+            // وضعیت: در حال افزودن دسته بندی جدید
             if ($state === "adding_category_name") {
                 $categoryName = trim($this->text);
                 if (empty($categoryName)) {
-                    $this->Alert("نام دسته‌بندی نمی‌تواند خالی باشد.");
+                    $this->Alert("نام دسته بندی نمی تواند خالی باشد.");
                     return;
                 }
 
@@ -962,12 +1443,12 @@ class BotHandler
                     $this->sendRequest('editMessageText', [
                         'chat_id' => $this->chatId,
                         'message_id' => $messageId,
-                        'text' => "✅ دسته‌بندی جدید با موفقیت ایجاد شد."
+                        'text' => "✅ دسته بندی جدید با موفقیت ایجاد شد."
                     ]);
                     sleep(2);
                     $this->showCategoryManagementMenu($messageId ?? null);
                 } else {
-                    $this->Alert("خطا در ایجاد دسته‌بندی.");
+                    $this->Alert("خطا در ایجاد دسته بندی.");
                 }
                 return;
             }
@@ -995,8 +1476,7 @@ class BotHandler
                 return;
             }
 
-            // مدیریت سایر وضعیت‌ها مانند ساخت محصول و اطلاعات ارسال
-            if (in_array($state, ['adding_product_name', 'adding_product_description', 'adding_product_count', 'adding_product_price', 'adding_product_photo'])) {
+            if (in_array($state, ['adding_product_name', 'adding_product_description', 'adding_product_price', 'adding_product_stock', 'adding_product_photos']) || str_starts_with($state, 'adding_variant_')) {
                 $this->handleProductCreationSteps();
                 return;
             }
@@ -1022,7 +1502,7 @@ class BotHandler
                 $name = trim($this->text);
                 $this->deleteMessage($this->messageId);
                 if (empty($name)) {
-                    $this->Alert("⚠️ نام و نام خانوادگی نمی‌تواند خالی باشد.");
+                    $this->Alert("⚠️ نام و نام خانوادگی نمی تواند خالی باشد.");
                     return;
                 }
                 $stateData['name'] = $name;
@@ -1065,7 +1545,7 @@ class BotHandler
                 $address = trim($this->text);
                 $this->deleteMessage($this->messageId);
                 if (empty($address)) {
-                    $this->Alert("⚠️ آدرس نمی‌تواند خالی باشد.");
+                    $this->Alert("⚠️ آدرس نمی تواند خالی باشد.");
                     return;
                 }
 
@@ -1078,7 +1558,7 @@ class BotHandler
 
                 $this->fileHandler->saveState($this->chatId, null);
 
-                if ($messageId) $this->deleteMessage($messageId); 
+                if ($messageId) $this->deleteMessage($messageId);
                 $this->Alert("✅ اطلاعات شما با موفقیت ذخیره شد.");
                 $this->showCart();
                 break;
@@ -1090,187 +1570,306 @@ class BotHandler
     {
         $state = $this->fileHandler->getState($this->chatId) ?? null;
         $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
-
         $messageId = $this->fileHandler->getMessageId($this->chatId);
 
-        switch ($state) {
-            case 'adding_product_name':
-                $productName = trim($this->text);
-                $this->deleteMessage($this->messageId);
-                if (empty($productName)) {
-                    $this->Alert("⚠️ نام محصول نمی‌تواند خالی باشد.");
-                    return;
-                }
-                $stateData['name'] = $productName;
-                $this->fileHandler->addData($this->chatId, [
-                    'state' => 'adding_product_description',
-                    'state_data' => json_encode($stateData)
-                ]);
+        // مرحله ۱: دریافت نام محصول
+        if ($state === 'adding_product_name') {
+            $productName = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            if (empty($productName)) {
+                $this->Alert("⚠️ نام محصول نمی‌تواند خالی باشد.");
+                return;
+            }
+            $stateData['name'] = $productName;
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'adding_product_description',
+                'state_data' => json_encode($stateData)
+            ]);
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ نام ثبت شد. حالا توضیحات محصول را وارد کنید:",
+                'reply_markup' => ['inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']]]]
+            ]);
+            return;
+        }
 
-                $this->sendRequest('editMessageText', [
-                    'chat_id' => $this->chatId,
-                    'message_id' => $messageId,
-                    'text' => "✅ نام محصول ثبت شد: " . htmlspecialchars($productName) . "\n\nحالا لطفاً توضیحات محصول را وارد کنید:",
-                    'parse_mode' => 'HTML',
-                    'reply_markup' => [
-                        'inline_keyboard' => [
-                            [
-                                ['text' => '↪️ مرحله قبل', 'callback_data' => 'product_creation_back_to_name'],
-                                ['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']
-                            ]
-                        ]
-                    ]
-                ]);
-                break;
+        // مرحله ۲: دریافت توضیحات
+        if ($state === 'adding_product_description') {
+            $stateData['description'] = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'adding_product_price',
+                'state_data' => json_encode($stateData)
+            ]);
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ توضیحات ثبت شد. حالا قیمت پایه محصول را به تومان وارد کنید (فقط عدد انگلیسی):",
+                'reply_markup' => ['inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']]]]
+            ]);
+            return;
+        }
 
-            case 'adding_product_description':
-                $stateData['description'] = trim($this->text);
-                $this->deleteMessage($this->messageId);
-                $this->fileHandler->addData($this->chatId, [
-                    'state' => 'adding_product_count',
-                    'state_data' => json_encode($stateData)
-                ]);
+        // مرحله ۳: دریافت قیمت
+        if ($state === 'adding_product_price') {
+            $price = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            if (!is_numeric($price) || $price < 0) {
+                $this->Alert("⚠️ لطفاً یک قیمت معتبر وارد کنید.");
+                return;
+            }
+            $stateData['price'] = (float)$price;
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'adding_product_stock',
+                'state_data' => json_encode($stateData)
+            ]);
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ قیمت ثبت شد. حالا موجودی انبار را وارد کنید (عدد انگلیسی):",
+                'reply_markup' => ['inline_keyboard' => [[['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']]]]
+            ]);
+            return;
+        }
 
-                $this->sendRequest('editMessageText', [
-                    'chat_id' => $this->chatId,
-                    'message_id' => $messageId,
-                    'text' => "✅ توضیحات ثبت شد.\n\nحالا لطفاً تعداد موجودی محصول را وارد کنید (فقط عدد انگلیسی):",
-                    'parse_mode' => 'HTML',
-                    'reply_markup' => [
-                        'inline_keyboard' => [
-                            [
-                                ['text' => '↪️ مرحله قبل', 'callback_data' => 'product_creation_back_to_description'],
-                                ['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']
-                            ]
-                        ]
-                    ]
-                ]);
-                break;
+        // مرحله ۴: دریافت موجودی
+        if ($state === 'adding_product_stock') {
+            $stock = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            if (!is_numeric($stock) || (int)$stock < 0) {
+                $this->Alert("⚠️ لطفاً یک عدد معتبر برای موجودی وارد کنید.");
+                return;
+            }
+            $stateData['stock'] = (int)$stock;
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'adding_product_photos',
+                'state_data' => json_encode($stateData)
+            ]);
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ موجودی ثبت شد. حالا می‌توانید یک یا چند عکس برای محصول ارسال کنید.\n\nپس از ارسال تمام عکس‌ها، دکمه 'اتمام ارسال عکس' را بزنید.",
+                'reply_markup' => ['inline_keyboard' => [[['text' => '✅ اتمام ارسال عکس', 'callback_data' => 'product_photos_done']]]]
+            ]);
+            return;
+        }
+        // مرحله ۵: دریافت عکس، ذخیره محلی فایل با نام مرتبط و ذخیره file_id
+        if ($state === 'adding_product_photos') {
+            $this->deleteMessage($this->messageId);
 
-            case 'adding_product_count':
-                $count = trim($this->text);
-                $this->deleteMessage($this->messageId);
-                if (!is_numeric($count) || $count < 0) {
-                    $this->Alert("⚠️ لطفاً یک تعداد معتبر وارد کنید.");
-                    return;
-                }
-                $stateData['stock'] = (int) $count;
-                $this->fileHandler->addData($this->chatId, [
-                    'state' => 'adding_product_price',
-                    'state_data' => json_encode($stateData)
-                ]);
+            if (isset($this->message['photo'])) {
+                $fileId = end($this->message['photo'])['file_id'];
+                $fileInfoResponse = $this->sendRequest('getFile', ['file_id' => $fileId]);
 
-                $this->sendRequest('editMessageText', [
-                    'chat_id' => $this->chatId,
-                    'message_id' => $messageId,
-                    'text' => "✅ تعداد ثبت شد: {$count} عدد\n\nحالا لطفاً قیمت محصول را وارد کنید (به تومان):",
-                    'parse_mode' => 'HTML',
-                    'reply_markup' => [
-                        'inline_keyboard' => [
-                            [
-                                ['text' => '↪️ مرحله قبل', 'callback_data' => 'product_creation_back_to_count'],
-                                ['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']
-                            ]
-                        ]
-                    ]
-                ]);
-                break;
+                if (isset($fileInfoResponse['ok']) && $fileInfoResponse['ok'] === true) {
+                    $filePathOnTelegram = $fileInfoResponse['result']['file_path'];
+                    $fileUrl = "https://api.telegram.org/file/bot" . $this->botToken . "/" . $filePathOnTelegram;
 
-            case 'adding_product_price':
-                $price = trim($this->text);
-                $this->deleteMessage($this->messageId);
-                if (!is_numeric($price) || $price < 0) {
-                    $this->Alert("⚠️ لطفاً یک قیمت معتبر وارد کنید.");
-                    return;
-                }
-                $stateData['price'] = (int) $price;
-                $this->fileHandler->addData($this->chatId, [
-                    'state' => 'adding_product_photo',
-                    'state_data' => json_encode($stateData)
-                ]);
+                    $imageContent = file_get_contents($fileUrl);
 
-                $this->sendRequest('editMessageText', [
-                    'chat_id' => $this->chatId,
-                    'message_id' => $messageId,
-                    'text' => "✅ قیمت ثبت شد: " . number_format($price) . " تومان\n\nحالا لطفاً عکس محصول را ارسال کنید :",
-                    'parse_mode' => 'HTML',
-                    'reply_markup' => [
-                        'inline_keyboard' => [
-                            [
-                                ['text' => '↪️ مرحله قبل', 'callback_data' => 'product_creation_back_to_price'],
-                                ['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']
-                            ]
-                        ]
-                    ]
-                ]);
-                break;
+                    if ($imageContent !== false) {
+                        $uploadDir = __DIR__ . '/../public/uploads/products/';
+                        if (!is_dir($uploadDir)) {
+                            mkdir($uploadDir, 0777, true);
+                        }
 
-            case 'adding_product_photo':
-                $this->deleteMessage($this->messageId);
+                        $fileExtension = pathinfo($filePathOnTelegram, PATHINFO_EXTENSION);
+                        $safeFileName = preg_replace('/[^A-Za-z0-9_\-]/', '_', $fileId);
+                        $newFileName = $safeFileName . '.' . $fileExtension;
+                        file_put_contents($uploadDir . $newFileName, $imageContent);
+                        $stateData['images'][] = $fileId;
+                        $this->fileHandler->addData($this->chatId, ['state_data' => json_encode($stateData)]);
 
-                if (isset($this->message['photo'])) {
-                    $stateData['image_file_id'] = end($this->message['photo'])['file_id'];
-                } elseif ($this->text !== '/skip') {
-                    $this->Alert("⚠️ لطفاً یک عکس ارسال کنید.");
-                    return;
+                        $this->Alert('✅ عکس دریافت و ذخیره شد. می‌توانید عکس بعدی را ارسال کنید.', false);
+                    } else {
+                        $this->Alert('❌ مشکلی در دانلود عکس از سرور تلگرام به وجود آمد.');
+                    }
                 } else {
-                    $stateData['image_file_id'] = null;
+                    $this->Alert('❌ مشکلی در دریافت اطلاعات عکس از تلگرام به وجود آمد.');
                 }
-                $this->fileHandler->addData($this->chatId, [
-                    'state' => 'adding_product_confirmation',
-                    'state_data' => json_encode($stateData)
-                ]);
-                $this->deleteMessage($messageId);
-                $this->showConfirmationPreview();
-                break;
+            } else {
+                $this->Alert('لطفاً فقط عکس ارسال کنید.');
+            }
+            return;
+        }
+        if (str_starts_with($state, 'adding_variant_')) {
+            $this->handleVariantCreationSteps($state, $stateData);
+            return;
         }
     }
 
 
+    private function handleVariantCreationSteps($state, $stateData)
+    {
+        $messageId = $this->fileHandler->getMessageId($this->chatId);
+        $variantIndex = $stateData['variant_index'] ?? 0;
+
+        // مرحله ۶.۱: دریافت نام واریانت
+        if ($state === 'adding_variant_name') {
+            $variantName = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            if (empty($variantName)) {
+                $this->Alert("⚠️ نام ویژگی نمی‌تواند خالی باشد.");
+                return;
+            }
+            $stateData['variants'][$variantIndex]['name'] = $variantName;
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'adding_variant_price',
+                'state_data' => json_encode($stateData)
+            ]);
+
+            $priceKeyboard = [];
+            $basePrice = $stateData['price'] ?? 0;
+            $priceKeyboard[] = [['text' => '💰 همان قیمت اصلی (' . number_format($basePrice) . ')', 'callback_data' => 'variant_use_price_' . $basePrice]];
+
+            $previousVariants = array_slice($stateData['variants'], 0, $variantIndex);
+            $existingPrices = array_unique(array_column($previousVariants, 'price'));
+            foreach ($existingPrices as $price) {
+                if ($price != $basePrice) {
+                    $priceKeyboard[] = [['text' => '💰 استفاده از قیمت ' . number_format($price), 'callback_data' => 'variant_use_price_' . $price]];
+                }
+            }
+            $priceKeyboard[] = [['text' => '❌ لغو افزودن ویژگی', 'callback_data' => 'product_variants_done']];
+
+
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ نام ویژگی: " . htmlspecialchars($variantName) . "\n\nحالا قیمت این ویژگی را وارد کنید:",
+                'reply_markup' => ['inline_keyboard' => $priceKeyboard]
+            ]);
+            return;
+        }
+
+        // مرحله ۶.۲: دریافت قیمت واریانت
+        if ($state === 'adding_variant_price') {
+            $price = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            if (!is_numeric($price) || $price < 0) {
+                $this->Alert("⚠️ قیمت نامعتبر است.");
+                return;
+            }
+            $stateData['variants'][$variantIndex]['price'] = (float)$price;
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'adding_variant_stock',
+                'state_data' => json_encode($stateData)
+            ]);
+
+            $stockKeyboard = [];
+            $baseStock = $stateData['stock'] ?? 0;
+            $stockKeyboard[] = [['text' => '📦 همان موجودی اصلی (' . $baseStock . ')', 'callback_data' => 'variant_use_stock_' . $baseStock]];
+
+            $previousVariants = array_slice($stateData['variants'], 0, $variantIndex);
+            $existingStocks = array_unique(array_column($previousVariants, 'stock'));
+            foreach ($existingStocks as $stock) {
+                if ($stock != $baseStock) {
+                    $stockKeyboard[] = [['text' => '📦 استفاده از موجودی ' . $stock, 'callback_data' => 'variant_use_stock_' . $stock]];
+                }
+            }
+            $stockKeyboard[] = [['text' => '❌ لغو افزودن ویژگی', 'callback_data' => 'product_variants_done']];
+
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ قیمت ثبت شد. حالا موجودی این ویژگی را وارد کنید:",
+                'reply_markup' => ['inline_keyboard' => $stockKeyboard]
+            ]);
+            return;
+        }
+
+        // مرحله ۶.۳: دریافت موجودی واریانت
+        if ($state === 'adding_variant_stock') {
+            $stock = trim($this->text);
+            $this->deleteMessage($this->messageId);
+            if (!is_numeric($stock) || (int)$stock < 0) {
+                $this->Alert("⚠️ موجودی نامعتبر است.");
+                return;
+            }
+            $stateData['variants'][$variantIndex]['stock'] = (int)$stock;
+            $stateData['variant_index'] = $variantIndex + 1;
+            $this->fileHandler->addData($this->chatId, [
+                'state' => 'asking_another_variant',
+                'state_data' => json_encode($stateData)
+            ]);
+            $this->sendRequest('editMessageText', [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => "✅ ویژگی با موفقیت افزوده شد. آیا می‌خواهید ویژگی دیگری اضافه کنید؟",
+                'reply_markup' => ['inline_keyboard' => [
+                    [['text' => '✅ بله، افزودن ویژگی جدید', 'callback_data' => 'add_another_variant']],
+                    [['text' => ' خیر، ادامه و پیش‌نمایش', 'callback_data' => 'product_variants_done']]
+                ]]
+            ]);
+        }
+    }
     private function showConfirmationPreview(): void
     {
+        $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
 
-        $stateDataJson = $this->fileHandler->getStateData($this->chatId);
-        $stateData = json_decode($stateDataJson ?? '{}', true);
+        $previewText = "✨ <b>پیش‌نمایش و تایید نهایی</b> ✨\n";
+        $previewText .= "➖➖➖➖➖➖➖➖➖➖➖➖➖➖\u{200F}\n";
+        $previewText .= "🏷 <b>نام محصول:</b>\n" . htmlspecialchars($stateData['name'] ?? '') . "\n";
+        $previewText .= "📝 <b>توضیحات:</b>\n<blockquote>" . htmlspecialchars($stateData['description'] ?? '') . "</blockquote>\n";
 
-        $previewText = " لطفاً اطلاعات زیر را بررسی و تایید کنید:\n\n";
-        $previewText .= "📦 نام محصول: " . htmlspecialchars($stateData['name'] ?? 'ثبت نشده') . "\n";
-        $previewText .= "📝 توضیحات: " . htmlspecialchars($stateData['description'] ?? 'ثبت نشده') . "\n";
-        $previewText .= "🔢 موجودی: " . ($stateData['stock'] ?? '۰') . " عدد\n";
-        $previewText .= "💰 قیمت: " . number_format($stateData['price'] ?? 0) . " تومان\n\n";
-        $previewText .= "در صورت صحت اطلاعات، دکمه \"تایید و ذخیره\" را بزنید.";
+        if (empty($stateData['variants'])) {
+            $previewText .= "💰 <b>قیمت:</b> " . number_format($stateData['price'] ?? 0) . " تومان\n";
+            $previewText .= "📦 <b>موجودی:</b> " . ($stateData['stock'] ?? 0) . " عدد\n";
+        }
+        $previewText .= "➖➖➖➖➖➖➖➖➖➖➖➖➖➖\u{200F}\n";;
+
+        if (!empty($stateData['variants'])) {
+            $previewText .= "📋 <b>ویژگی‌های محصول:</b>\n";
+            foreach ($stateData['variants'] as $variant) {
+                $price = number_format($variant['price']);
+                $stock = $variant['stock'];
+                $name = htmlspecialchars($variant['name']);
+                $previewText .= "\n- ▫️ <b>{$name}</b>\n";
+                $previewText .= "  ▫️ قیمت: {$price} تومان\n";
+                $previewText .= "  ▫️ موجودی: {$stock} عدد";
+            }
+        }
 
         $keyboard = [
             'inline_keyboard' => [
-                [
-                    ['text' => '✅ تایید و ذخیره', 'callback_data' => 'product_confirm_save'],
-                    ['text' => '❌ لغو عملیات', 'callback_data' => 'product_confirm_cancel']
-                ]
+                [['text' => '✅ تایید و ذخیره نهایی', 'callback_data' => 'product_confirm_save']],
+                [['text' => '❌ لغو عملیات', 'callback_data' => 'product_confirm_cancel']]
             ]
         ];
 
-        $res = null;
-        if (!empty($stateData['image_file_id'])) {
-            $res = $this->sendRequest('sendPhoto', [
-                'chat_id' => $this->chatId,
-                'photo' => $stateData['image_file_id'],
-                'caption' => $previewText,
-                'parse_mode' => 'HTML',
+        if (!empty($stateData['images'])) {
+            $allImages = $stateData['images'];
+            $imageCount = count($allImages);
+
+            if ($imageCount > 1) {
+                $mediaGroup = [];
+                $imagesToSendInGroup = array_slice($allImages, 0, -1);
+                foreach ($imagesToSendInGroup as $fileId) {
+                    $mediaGroup[] = ['type' => 'photo', 'media' => $fileId];
+                }
+                $this->sendRequest('sendMediaGroup', ['chat_id' => $this->chatId, 'media' => json_encode($mediaGroup)]);
+            }
+
+            $lastImageFileId = end($allImages);
+            $this->sendRequest('sendPhoto', [
+                'chat_id'      => $this->chatId,
+                'photo'        => $lastImageFileId,
+                'caption'      => $previewText,
+                'parse_mode'   => 'HTML',
                 'reply_markup' => $keyboard
             ]);
         } else {
-            $res = $this->sendRequest('sendMessage', [
-                'chat_id' => $this->chatId,
-                'text' => $previewText,
-                'parse_mode' => 'HTML',
+            $this->sendRequest('sendMessage', [
+                'chat_id'      => $this->chatId,
+                'text'         => $previewText . "\n\n❓ در صورت تایید اطلاعات، دکمه زیر را بزنید:",
+                'parse_mode'   => 'HTML',
                 'reply_markup' => $keyboard
             ]);
         }
-
-        if (isset($res['result']['message_id'])) {
-            $this->fileHandler->saveMessageId($this->chatId, $res['result']['message_id']);
-        }
     }
+
+
+
 
 
     public function sendRequest($method, $data)
@@ -1315,7 +1914,7 @@ class BotHandler
         }
         return $this->db->createNewProduct($stateData);
     }
-    public function Alert($message, $alert = true): void
+    public function Alert($message, $alert = true, $messageId = null): void
     {
         if ($this->callbackQueryId) {
             $data = [
@@ -1325,37 +1924,90 @@ class BotHandler
             ];
             $this->sendRequest("answerCallbackQuery", $data);
         } else {
-            $res = $this->sendRequest("sendMessage", [
-                "chat_id" => $this->chatId,
-                "text" => $message,
-            ]);
-            $this->deleteMessage($res['result']['message_id'] ?? null, 3);
+            if ($messageId) {
+                $this->sendRequest("editMessageText", [
+                    "chat_id" => $this->chatId,
+                    'message_id'  => $messageId,
+                    "text" => $message,
+                ]);
+                sleep(2);
+            } else {
+                $res = $this->sendRequest("sendMessage", [
+                    "chat_id" => $this->chatId,
+                    "text" => $message,
+                ]);
+                $this->deleteMessage($res['result']['message_id'] ?? null, delay: 2);
+            }
         }
     }
     private function generateProductCardText(array $product): string
     {
+        // دریافت ویژگی‌های محصول از دیتابیس
+        $variants = $this->db->getProductVariants($product['id']);
 
-        $rtl_on = "\u{202B}";
-        $rtl_off = "\u{202C}";
+        $name = htmlspecialchars($product['name']);
+        $desc = !empty($product['description']) ? htmlspecialchars($product['description']) : '<i>توضیحات ثبت نشده است.</i>';
 
-        $name = $product['name'];
-        $desc = $product['description'] ?? 'توضیحی ثبت نشده';
-        $price = number_format($product['price']);
-
-        $text = $rtl_on;
-        $text .= "🛍️ <b>{$name}</b>\n\n";
+        $text = "🛍 <b>{$name}</b>\n";
+        $text .= "----------------------------------------------------------------------\u{200F}\n";
         $text .= "{$desc}\n\n";
 
-        if (isset($product['quantity'])) {
+        // اگر محصول ویژگی (variant) داشت
+        if (!empty($variants)) {
+            $minPrice = min(array_column($variants, 'price'));
+            $maxPrice = max(array_column($variants, 'price'));
+            $totalStock = array_sum(array_column($variants, 'stock'));
 
-            $quantity = (int) $product['quantity'];
-            $text .= "🔢 <b>تعداد در سبد:</b> {$quantity} عدد\n";
-        } else {
-            $count = (int) ($product['stock'] ?? 0);
-            $text .= "📦 <b>موجودی:</b> {$count} عدد\n";
+            // نمایش محدوده قیمت
+            if ($minPrice === $maxPrice) {
+                $text .= "💵 <b>قیمت:</b> " . number_format($minPrice) . " تومان\n";
+            } else {
+                $text .= "💵 <b>قیمت:</b> از " . number_format($minPrice) . " تا " . number_format($maxPrice) . " تومان\n";
+            }
+
+            // نمایش وضعیت کلی موجودی
+            if ($totalStock > 10) {
+                $text .= "📦 <b>وضعیت:</b> ✅ موجود\n\n";
+            } elseif ($totalStock > 0) {
+                $text .= "📦 <b>وضعیت:</b> ⚠️ تعداد محدود\n\n";
+            } else {
+                $text .= "📦 <b>وضعیت:</b> ❌ ناموجود\n\n";
+            }
+
+            // لیست کردن چند ویژگی اول برای پیش‌نمایش
+            $text .= "<b>ویژگی‌های موجود:</b>\n";
+            $variantCount = 0;
+            foreach ($variants as $variant) {
+                if ($variant['stock'] > 0) {
+                    $variantPrice = number_format($variant['price']);
+                    $text .= "- " . htmlspecialchars($variant['variant_name']) . " (" . $variantPrice . " تومان)\n";
+                    $variantCount++;
+                    if ($variantCount >= 3) {
+                        if (count($variants) > 3) $text .= "- و ...\n";
+                        break;
+                    }
+                }
+            }
+        } else { // اگر محصول ساده و بدون ویژگی بود
+            $price = number_format($product['price']);
+            $stock = (int)($product['stock'] ?? 0);
+
+            $text .= "💵 <b>قیمت:</b> {$price} تومان\n";
+
+            if ($stock > 10) {
+                $text .= "📦 <b>وضعیت:</b> ✅ موجود ({$stock} عدد)\n";
+            } elseif ($stock > 0) {
+                $text .= "📦 <b>وضعیت:</b> ⚠️ تعداد محدود ({$stock} عدد)\n";
+            } else {
+                $text .= "📦 <b>وضعیت:</b> ❌ ناموجود\n";
+            }
         }
-        $text .= "💵 <b>قیمت:</b> {$price} تومان";
-        $text .= $rtl_off;
+
+        if (isset($product['quantity'])) {
+            $quantity = (int)$product['quantity'];
+            $text .= "----------------------------------------------------------------------\u{200F}\n";
+            $text .= "🛒 <b>تعداد در سبد شما:</b> {$quantity} عدد\n";
+        }
 
         return $text;
     }
@@ -1371,7 +2023,7 @@ class BotHandler
         $allCategories = $this->db->getAllCategories();
 
         if (empty($allCategories)) {
-            $this->Alert("هیچ دسته‌بندی‌ای برای نمایش محصولات وجود ندارد!");
+            $this->Alert("هیچ دسته بندی ای برای نمایش محصولات وجود ندارد!");
             $this->showProductManagementMenu($messageId);
             return;
         }
@@ -1392,7 +2044,7 @@ class BotHandler
         $categoryButtons[] = [['text' => '⬅️ بازگشت', 'callback_data' => 'admin_manage_products']];
 
         $keyboard = ['inline_keyboard' => $categoryButtons];
-        $text = "لطفاً برای مشاهده محصولات، یک دسته‌بندی را انتخاب کنید:";
+        $text = "لطفاً برای مشاهده محصولات، یک دسته بندی را انتخاب کنید:";
 
         $this->sendRequest("editMessageText", [
             'chat_id' => $this->chatId,
@@ -1442,9 +2094,9 @@ class BotHandler
 
         $hour = (int) jdf::jdate('H', '', '', '', 'en');
         $defaultWelcome = match (true) {
-            $hour < 12 => "☀️ صبح بخیر! آماده‌ای برای دیدن پیشنهادهای خاص امروز؟",
+            $hour < 12 => "☀️ صبح بخیر! آماده ای برای دیدن پیشنهادهای خاص امروز؟",
             $hour < 18 => "🌼 عصر بخیر! یه چیزی خاص برای امروز داریم 😉",
-            default => "🌙 شب بخیر! شاید وقتشه یه هدیه‌ خاص برای خودت یا عزیزات پیدا کنی...",
+            default => "🌙 شب بخیر! شاید وقتشه یه هدیه  خاص برای خودت یا عزیزات پیدا کنی...",
         };
 
         if (!empty($settings['main_menu_text'])) {
@@ -1453,7 +2105,7 @@ class BotHandler
             $menuText = $defaultWelcome;
         }
 
-        $allCategories = $this->db->getAllCategories();
+        $allCategories = $this->db->getActiveRootCategories();
         $categoryButtons = [];
 
         if (!empty($settings['daily_offer'])) {
@@ -1461,20 +2113,14 @@ class BotHandler
         }
 
         if (!empty($allCategories)) {
-            $activeCategories = [];
-            foreach ($allCategories as $category) {
-                if (isset($category['parent_id']) && $category['parent_id'] == 0 && !empty($category['is_active'])) {
-                    $activeCategories[] = $category;
-                }
-            }
-            usort($activeCategories, fn($a, $b) => ($a['sort_order'] ?? 0) <=> ($b['sort_order'] ?? 0));
-
             $row = [];
-            foreach ($activeCategories as $category) {
-                $row[] = ['text' => $category['name'], 'callback_data' => 'category_' . $category['id']];
-                if (count($row) == 2) {
-                    $categoryButtons[] = $row;
-                    $row = [];
+            foreach ($allCategories as $category) {
+                if ($category['is_active']) {
+                    $row[] = ['text' => $category['name'], 'callback_data' => 'category_' . $category['id']];
+                    if (count($row) == 2) {
+                        $categoryButtons[] = $row;
+                        $row = [];
+                    }
                 }
             }
             if (!empty($row)) {
@@ -1483,7 +2129,7 @@ class BotHandler
         }
 
         $staticButtons = [
-            [['text' => '❤️ علاقه‌مندی‌ها', 'callback_data' => 'show_favorites'], ['text' => '🛒 سبد خرید', 'callback_data' => 'show_cart']],
+            [['text' => '❤️ علاقه مندی ها', 'callback_data' => 'show_favorites'], ['text' => '🛒 سبد خرید', 'callback_data' => 'show_cart']],
             [['text' => '📜 قوانین فروشگاه', 'callback_data' => 'show_store_rules'], ['text' => '🛍️ سفارشات من', 'callback_data' => 'my_orders']],
             [['text' => '🔍 جستجوی محصول', 'callback_data' => 'activate_inline_search']],
             [['text' => 'ℹ️ درباره ما', 'callback_data' => 'show_about_us'], ['text' => '📞 پشتیبانی', 'callback_data' => 'contact_support']]
@@ -1521,7 +2167,7 @@ class BotHandler
         $allInvoices = $this->db->getInvoicesByUserId($this->chatId);
 
         if (empty($allInvoices)) {
-            $this->Alert("شما تاکنون هیچ سفارشی ثبت نکرده‌اید.");
+            $this->Alert("شما تاکنون هیچ سفارشی ثبت نکرده اید.");
             return;
         }
 
@@ -1619,43 +2265,59 @@ class BotHandler
             default => 'نامشخص',
         };
     }
-
-    public function promptForProductCategory($messageId = null): void
+    public function showCategorySelectionForProduct(?int $parentId, $messageId = null): void
     {
-        $allCategories = $this->db->getAllCategories();
+        $categories = $parentId === null
+            ? $this->db->getRootCategories()
+            : $this->db->getSubcategories($parentId);
 
-        if (empty($allCategories)) {
-            $this->Alert("ابتدا باید حداقل یک دسته‌بندی ایجاد کنید!");
+        if ($parentId === null && empty($categories)) {
+            $this->Alert("❌ برای افزودن محصول، ابتدا باید حداقل یک دسته‌بندی ایجاد کنید.");
             $this->showProductManagementMenu($messageId);
             return;
         }
 
-        $categoryButtons = [];
-        foreach ($allCategories as $category) {
-            $categoryButtons[] = [['text' => $category['name'], 'callback_data' => 'product_cat_select_' . $category['id']]];
+        $parentCategory = $parentId ? $this->db->getCategoryById($parentId) : null;
+        $text = $parentCategory
+            ? "زیرشاخه ای از \"<b>" . htmlspecialchars($parentCategory['name']) . "</b>\" را انتخاب کنید:"
+            : "لطفاً دسته بندی اصلی محصول را انتخاب کنید:";
+
+        $buttons = [];
+        $row = [];
+        foreach ($categories as $category) {
+            $row[] = ['text' => $category['name'], 'callback_data' => 'prod_cat_nav_' . $category['id']];
+            if (count($row) >= 2) {
+                $buttons[] = $row;
+                $row = [];
+            }
         }
-        $categoryButtons[] = [['text' => '❌ انصراف و بازگشت', 'callback_data' => 'admin_manage_products']];
+        if (!empty($row)) {
+            $buttons[] = $row;
+        }
 
-        $keyboard = ['inline_keyboard' => $categoryButtons];
-        $text = "لطفاً دسته‌بندی محصول جدید را انتخاب کنید:";
+        if ($parentCategory) {
+            $backCallback = $parentCategory['parent_id']
+                ? 'prod_cat_nav_' . $parentCategory['parent_id']
+                : 'admin_manage_products';
+            $buttons[] = [['text' => '⬅️ بازگشت', 'callback_data' => $backCallback]];
+        } else {
+            $buttons[] = [['text' => '❌ انصراف', 'callback_data' => 'admin_manage_products']];
+        }
 
-        $this->fileHandler->saveState($this->chatId, 'adding_product_category');
+        $keyboard = ['inline_keyboard' => $buttons];
 
-        $this->fileHandler->addData($this->chatId, ['state_data' => json_encode([])]);
+        $data = [
+            'chat_id'      => $this->chatId,
+            'text'         => $text,
+            'parse_mode'   => 'HTML',
+            'reply_markup' => json_encode($keyboard)
+        ];
 
         if ($messageId) {
-            $this->sendRequest("editMessageText", [
-                'chat_id' => $this->chatId,
-                'message_id' => $messageId,
-                'text' => $text,
-                'reply_markup' => json_encode($keyboard)
-            ]);
+            $data['message_id'] = $messageId;
+            $this->sendRequest("editMessageText", $data);
         } else {
-            $this->sendRequest("sendMessage", [
-                'chat_id' => $this->chatId,
-                'text' => $text,
-                'reply_markup' => json_encode($keyboard)
-            ]);
+            $this->sendRequest("sendMessage", $data);
         }
     }
 
@@ -1749,7 +2411,7 @@ class BotHandler
         $username = str_replace('@', '', $supportId);
         $supportUrl = "https://t.me/{$username}";
 
-        $text = "📞 برای ارتباط با واحد پشتیبانی می‌توانید مستقیماً از طریق آیدی زیر اقدام کنید .\n\n";
+        $text = "📞 برای ارتباط با واحد پشتیبانی می توانید مستقیماً از طریق آیدی زیر اقدام کنید .\n\n";
         $text .= "👤 آیدی پشتیبانی: {$supportId}";
 
         $keyboard = [
@@ -1789,7 +2451,7 @@ class BotHandler
             ]
         ];
 
-        if ($invoice['status'] === 'pending_payment') {
+        if ($invoice['status'] === 'pending') {
             $keyboard['inline_keyboard'][] = [['text' => '📸 ارسال رسید پرداخت', 'callback_data' => 'upload_receipt_' . $invoice['id']]];
         }
 
@@ -1806,7 +2468,7 @@ class BotHandler
     {
         $favoriteProducts = $this->db->getUserFavorites($this->chatId);
         $cartItems = $this->db->getUserCart($this->chatId);
-        // تبدیل سبد خرید به یک آرایه ساده‌تر برای جستجوی سریع
+        // تبدیل سبد خرید به یک آرایه ساده تر برای جستجوی سریع
         $cartProductIds = array_column($cartItems, 'quantity', 'id');
 
         $previousMessageIds = $this->fileHandler->getMessageIds($this->chatId);
@@ -1816,8 +2478,8 @@ class BotHandler
         }
 
         if (empty($favoriteProducts)) {
-            $this->Alert("❤️ لیست علاقه‌مندی‌های شما خالی است.");
-            $this->MainMenu($messageId); 
+            $this->Alert("❤️ لیست علاقه مندی های شما خالی است.");
+            $this->MainMenu($messageId);
             return;
         }
 
@@ -1832,7 +2494,7 @@ class BotHandler
             $productId = $product['id'];
             $keyboardRows = [];
 
-            $keyboardRows[] = [['text' => '❤️ حذف از علاقه‌مندی', 'callback_data' => 'toggle_favorite_' . $productId]];
+            $keyboardRows[] = [['text' => '❤️ حذف از علاقه مندی', 'callback_data' => 'toggle_favorite_' . $productId]];
 
             if (isset($cartProductIds[$productId])) {
                 $quantity = $cartProductIds[$productId];
@@ -1869,7 +2531,7 @@ class BotHandler
         }
 
 
-        $navText = "--- علاقه‌مندی‌ها (صفحه {$page} از {$totalPages}) ---";
+        $navText = "--- علاقه مندی ها (صفحه {$page} از {$totalPages}) ---";
         $navButtons = [];
         if ($page > 1) {
             $navButtons[] = ['text' => "▶️ صفحه قبل", 'callback_data' => "fav_list_page_" . ($page - 1)];
@@ -1895,11 +2557,82 @@ class BotHandler
 
         $this->fileHandler->addData($this->chatId, ['message_ids' => $newMessageIds]);
     }
+    public function promptForNewParentCategory(?int $parentId, int $messageId): void
+    {
+        $state = $this->fileHandler->getState($this->chatId) ?? '';
+        // ابتدا بررسی می کنیم که آیا واقعاً در وضعیت جابجایی دسته بندی هستیم یا خیر
+        if (!str_starts_with($state, 'moving_category_')) {
+            $this->showCategoryManagementMenu($messageId); // در غیر این صورت به منوی اصلی باز می گردیم
+            return;
+        }
+
+        $movingCategoryId = (int)str_replace('moving_category_', '', $state);
+        $movingCategory = $this->db->getCategoryById($movingCategoryId);
+
+        // اگر دسته بندی مورد نظر برای جابجایی وجود نداشت، عملیات را متوقف می کنیم
+        if (!$movingCategory) {
+            $this->Alert("خطا: دسته بندی مورد نظر برای جابجایی یافت نشد.");
+            $this->showCategoryManagementMenu($messageId);
+            return;
+        }
+
+        // دریافت دسته بندی های سطح فعلی
+        $categories = ($parentId === null)
+            ? $this->db->getRootCategories()  // اگر در ریشه هستیم
+            : $this->db->getSubcategories($parentId); // اگر در یک زیرشاخه هستیم
+
+        $parentCategory = $parentId ? $this->db->getCategoryById($parentId) : null;
+        $pathText = $parentId ? $this->db->getCategoryPath($parentId) : 'ریشه اصلی';
+
+        // ساخت متن پیام برای کاربر
+        $text = "🔄 <b>جابجایی دسته بندی:</b> \"" . htmlspecialchars($movingCategory['name']) . "\"\n\n";
+        $text .= "📍 مسیر فعلی: <b>" . htmlspecialchars($pathText) . "</b>\n\n";
+        $text .= "لطفاً مقصد جدید را انتخاب کنید:";
+
+        $buttons = [];
+
+        // دکمه "انتخاب این دسته" فقط زمانی نمایش داده می شود که در یک زیرشاخه باشیم
+        if ($parentId !== null && $parentId != $movingCategoryId) {
+            $buttons[] = [['text' => '✅ انتخاب "' . htmlspecialchars($parentCategory['name']) . '" به عنوان والد', 'callback_data' => 'select_new_parent_confirm_' . $parentId]];
+        }
+
+        // دکمه "انتقال به ریشه" همیشه نمایش داده می شود
+        $buttons[] = [['text' => '🔝 انتقال به سطح اصلی (بدون والد)', 'callback_data' => 'select_new_parent_confirm_0']];
+
+        // نمایش لیست زیرشاخه ها برای پیمایش
+        foreach ($categories as $category) {
+            // خود دسته بندی در حال جابجایی را در لیست مقاصد نمایش نمی دهیم
+            if ($category['id'] != $movingCategoryId) {
+                $buttons[] = [['text' => '📁 ' . htmlspecialchars($category['name']), 'callback_data' => 'select_new_parent_nav_' . $category['id']]];
+            }
+        }
+
+        // دکمه های ناوبری (بازگشت و لغو)
+        $navigationRow = [];
+        if ($parentCategory) {
+            // دکمه بازگشت به سطح بالاتر
+            $backCallback = $parentCategory['parent_id'] !== null
+                ? 'select_new_parent_nav_' . $parentCategory['parent_id']
+                : 'admin_category_list'; // اگر والد در ریشه است، به لیست اصلی برمی گردیم
+            $navigationRow[] = ['text' => '⬆️ بازگشت به سطح بالاتر', 'callback_data' => $backCallback];
+        }
+        $navigationRow[] = ['text' => '❌ لغو عملیات', 'callback_data' =>  "cancel_edit_category_" . $movingCategoryId];
+        $buttons[] = $navigationRow;
+
+        // ارسال پیام با دکمه های جدید
+        $keyboard = ['inline_keyboard' => $buttons];
+        $this->sendRequest("editMessageText", [
+            'chat_id' => $this->chatId,
+            'message_id' => $messageId,
+            'text' => $text,
+            'parse_mode' => 'HTML',
+            'reply_markup' => json_encode($keyboard)
+        ]);
+    }
 
     public function showCart($messageId = null): void
     {
-        // ۱. خواندن سبد خرید با متد جدید
-        $cartItems = $this->db->getUserCart($this->chatId);
+        $cartItems = $this->db->getUserCart($this -> chatId);
 
         $previousMessageIds = $this->fileHandler->getMessageIds($this->chatId);
         if (!empty($previousMessageIds)) {
@@ -1913,7 +2646,6 @@ class BotHandler
             return;
         }
 
-        // ۲. خواندن اطلاعات ارسال با متد جدید
         $shippingInfo = $this->db->getUserShippingInfo($this->chatId);
         $shippingInfoComplete = !empty($shippingInfo);
 
@@ -1938,29 +2670,38 @@ class BotHandler
         $text .= "<b>📋 لیست اقلام:</b>\n";
         $totalPrice = 0;
 
-        // ۳. حلقه روی آیتم‌های خوانده شده از دیتابیس
+        // --- *** شروع اصلاحات کلیدی *** ---
         foreach ($cartItems as $item) {
             $unitPrice = $item['price'];
             $quantity = $item['quantity'];
             $itemPrice = $unitPrice * $quantity;
             $totalPrice += $itemPrice;
 
-            $text .= "🔸 " . htmlspecialchars($item['name']) . "\n";
+            // نام اصلی محصول را می‌گیریم
+            $itemName = htmlspecialchars($item['product_name']);
+
+            // اگر ویژگی داشت، نام ویژگی را به آن اضافه می‌کنیم
+            if (!empty($item['variant_name'])) {
+                $itemName .= " - (<b>" . htmlspecialchars($item['variant_name']) . "</b>)";
+            }
+
+            $text .= "🔸 " . $itemName . "\n";
             $text .= "  ➤ تعداد: {$quantity} | قیمت واحد: " . number_format($unitPrice) . " تومان\n";
             $text .= "  💵 مجموع: " . number_format($itemPrice) . " تومان\n\n";
         }
+        // --- *** پایان اصلاحات کلیدی *** ---
 
         $taxAmount = round($totalPrice * $taxPercent / 100);
         $grandTotal = $totalPrice + $taxAmount + $deliveryCost - $discountFixed;
 
         $text .= "📦 هزینه ارسال: " . number_format($deliveryCost) . " تومان\n";
-        if ($discountFixed > 0) { // نمایش تخفیف فقط در صورت وجود
+        if ($discountFixed > 0) {
             $text .= "💸 تخفیف: " . number_format($discountFixed) . " تومان\n";
         }
         $text .= "📊 مالیات ({$taxPercent}%): " . number_format($taxAmount) . " تومان\n";
         $text .= "💰 <b>مبلغ نهایی قابل پرداخت:</b> <b>" . number_format($grandTotal) . "</b> تومان";
 
-        // ۴. دکمه‌ها (منطق بدون تغییر)
+        // ... (بخش ساخت دکمه‌ها بدون تغییر باقی می‌ماند) ...
         $keyboardRows = [];
         if ($shippingInfoComplete) {
             $keyboardRows[] = [['text' => '💳 پرداخت نهایی', 'callback_data' => 'checkout']];
@@ -1973,21 +2714,20 @@ class BotHandler
         $keyboardRows[] = [['text' => '⬅️ بازگشت به منوی اصلی', 'callback_data' => 'main_menu']];
         $keyboard = ['inline_keyboard' => $keyboardRows];
 
-        // ... بقیه کد برای ارسال پیام (بدون تغییر)
         if ($messageId) {
             $this->sendRequest("editMessageText", [
                 'chat_id' => $this->chatId,
                 "message_id" => $messageId,
                 'text' => $text,
                 'parse_mode' => 'HTML',
-                'reply_markup' => json_encode($keyboard)
+                'reply_markup' => $keyboard
             ]);
         } else {
             $this->sendRequest("sendMessage", [
                 'chat_id' => $this->chatId,
                 'text' => $text,
                 'parse_mode' => 'HTML',
-                'reply_markup' => json_encode($keyboard)
+                'reply_markup' => $keyboard
             ]);
         }
     }
@@ -1995,29 +2735,53 @@ class BotHandler
     {
         $keyboard = [
             'inline_keyboard' => [
-                [['text' => '🛍 مدیریت دسته‌بندی‌ها', 'callback_data' => 'admin_manage_categories']],
-                [['text' => '📝 مدیریت محصولات', 'callback_data' => 'admin_manage_products']],
-                [['text' => '🧾 مدیریت فاکتورها', 'callback_data' => 'admin_manage_invoices']],
-                [['text' => '⚙️ تنظیمات ربات', 'callback_data' => 'admin_bot_settings']],
-                [['text' => '📊 آمار و گزارشات', 'callback_data' => 'admin_reports']],
-                [['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'main_menu']]
+                [
+                    ['text' => '🛍 مدیریت دسته‌بندی‌ها', 'callback_data' => 'admin_manage_categories'],
+                    ['text' => '📝 مدیریت محصولات', 'callback_data' => 'admin_manage_products']
+                ],
+                [
+                    ['text' => '🧾 مدیریت فاکتورها', 'callback_data' => 'admin_manage_invoices'],
+                    ['text' => '📊 آمار و گزارشات', 'callback_data' => 'admin_reports']
+                ],
+                [
+                    ['text' => '⚙️ تنظیمات ربات', 'callback_data' => 'admin_bot_settings']
+                ],
+                [
+                    ['text' => '🔙 بازگشت به منوی اصلی', 'callback_data' => 'main_menu']
+                ]
             ]
         ];
 
+        // --- شروع تغییرات برای نمایش آمار ---
+        $stats = $this->db->getStatsSummary();
+        $jdate = jdf::jdate('l، j F Y');
+
+        $text  = "🤖 <b>پنل مدیریت ربات</b>\n";
+        $text .= "📅 " . $jdate . "\n";
+        $text .= "----------------------------------------------------------------------\u{200F}\n";
+        $text .= "📊 <b>آمار کلی:</b>\n";
+        $text .= "👤 کاربران کل: " . number_format($stats['total_users']) . " (<b>" . number_format($stats['new_users_today']) . "</b> کاربر جدید امروز)\n";
+        $text .= "🛍 محصولات: " . number_format($stats['total_products']) . " (<b>" . number_format($stats['low_stock_products']) . "</b> محصول رو به اتمام)\n\n";
+
+        $text .= "📈 <b>وضعیت امروز:</b>\n";
+        $text .= "💰 درآمد (تایید شده): <b>" . number_format($stats['todays_revenue']) . "</b> تومان\n";
+        $text .= "⏳ سفارشات در انتظار بررسی: <b>" . number_format($stats['pending_invoices']) . "</b> مورد\n";
+        $text .= "----------------------------------------------------------------------\u{200F}\n";
+        $text .= "لطفاً از گزینه‌های زیر یکی را انتخاب کنید:";
+        // --- پایان تغییرات ---
+
+        $data = [
+            "chat_id" => $this->chatId,
+            "text" => $text,
+            "parse_mode" => "HTML",
+            "reply_markup" => json_encode($keyboard, JSON_UNESCAPED_UNICODE)
+        ];
+
         if ($messageId) {
-            $this->sendRequest("editMessageText", [
-                "chat_id" => $this->chatId,
-                "message_id" => $messageId,
-                "text" => "پنل مدیریت ربات:",
-                "reply_markup" => json_encode($keyboard)
-            ]);
-            return;
+            $data["message_id"] = $messageId;
+            $this->sendRequest("editMessageText", $data);
         } else {
-            $this->sendRequest("sendMessage", [
-                "chat_id" => $this->chatId,
-                "text" => "پنل مدیریت ربات:",
-                "reply_markup" => $keyboard
-            ]);
+            $this->sendRequest("sendMessage", $data);
         }
     }
 
@@ -2032,7 +2796,7 @@ class BotHandler
         $allProducts = $this->db->getProductsByCategoryId($categoryId);
 
         if (empty($allProducts)) {
-            $this->Alert("هیچ محصولی در این دسته‌بندی یافت نشد.");
+            $this->Alert("هیچ محصولی در این دسته بندی یافت نشد.");
             return;
         }
         $newMessageIds = [];
@@ -2104,14 +2868,14 @@ class BotHandler
         if (!empty($navButtons)) {
             $navKeyboard[] = $navButtons;
         }
-        $navKeyboard[] = [['text' => '⬅️ بازگشت به دسته‌بندی‌ها', 'callback_data' => 'admin_product_list']];
+        $navKeyboard[] = [['text' => '⬅️ بازگشت به دسته بندی ها', 'callback_data' => 'admin_product_list']];
 
         $this->sendRequest("sendMessage", [
             'chat_id' => $this->chatId,
             'text' => $navText,
             'reply_markup' => ['inline_keyboard' => $navKeyboard]
         ]);
-        
+
         $this->fileHandler->addData($this->chatId, ['message_ids' => $newMessageIds]);
     }
     public function initiateCardPayment($messageId): void
@@ -2164,7 +2928,7 @@ class BotHandler
         $text .= "💰 مبلغ قابل پرداخت: <b>" . number_format($grandTotal) . " تومان</b>\n";
         $text .= "🕒 زمان ثبت: " . jdf::jdate("Y/m/d - H:i") . "\n";
         $text .= "━━━━━━━━━━━━━━━━━\n\n";
-        $text .= "📌 لطفاً مبلغ فوق را به کارت زیر واریز نمایید و سپس از طریق دکمه‌ی زیر، تصویر رسید پرداخت را برای ما ارسال کنید:\n\n";
+        $text .= "📌 لطفاً مبلغ فوق را به کارت زیر واریز نمایید و سپس از طریق دکمه ی زیر، تصویر رسید پرداخت را برای ما ارسال کنید:\n\n";
         $text .= "💳 <b>شماره کارت:</b>\n<code>{$cardNumber}</code>\n";
         $text .= "👤 <b>نام صاحب حساب:</b>\n<b>{$cardHolderName}</b>\n\n";
         $text .= "📦 سفارش شما پس از تأیید پرداخت پردازش و ارسال خواهد شد.";
@@ -2184,6 +2948,66 @@ class BotHandler
         ]);
     }
 
+    public function promptForParentCategory(?int $parentId = null, int $messageId = null): void
+    {
+        $allSuitableCategories = $this->db->getCategoriesWithNoProducts();
+
+        $currentLevelCategories = [];
+        if ($parentId === null) {
+            $currentLevelCategories = $allSuitableCategories;
+        } else {
+            $findChildren = function ($categories, $pId) use (&$findChildren) {
+                foreach ($categories as $category) {
+                    if ($category['id'] == $pId) {
+                        return $category['children'];
+                    }
+                    if (!empty($category['children'])) {
+                        $found = $findChildren($category['children'], $pId);
+                        if ($found !== null) return $found;
+                    }
+                }
+                return null;
+            };
+            $currentLevelCategories = $findChildren($allSuitableCategories, $parentId);
+        }
+
+        $parentCategory = $parentId ? $this->db->getCategoryById($parentId) : null;
+        $pathText = $parentId ? $this->db->getCategoryPath($parentId) : 'دسته بندی های اصلی';
+        $text = "📍 <b>مسیر فعلی:</b> " . $pathText . "\n\nلطفاً یک دسته بندی را به عنوان والد انتخاب کنید:";
+
+
+        $buttons = [];
+        $row = [];
+        foreach ($currentLevelCategories as $category) {
+            $row[] = ['text' => $category['name'], 'callback_data' => 'select_parent_nav_' . $category['id']];
+            if (count($row) >= 1) {
+                $buttons[] = $row;
+                $row = [];
+            }
+        }
+        if (!empty($row)) {
+            $buttons[] = $row;
+        }
+
+        if ($parentCategory) {
+            $buttons[] = [['text' => '✅ انتخاب همین دسته به عنوان والد', 'callback_data' => 'select_parent_confirm_' . $parentCategory['id']]];
+        }
+
+        $backCallback = ($parentCategory && $parentCategory['parent_id'] !== null)
+            ? 'select_parent_nav_' . $parentCategory['parent_id']
+            : 'admin_manage_categories';
+        $buttons[] = [['text' => '⬅️ بازگشت', 'callback_data' => $backCallback]];
+
+        $keyboard = ['inline_keyboard' => $buttons];
+        $data = ['chat_id' => $this->chatId, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => json_encode($keyboard)];
+
+        if ($messageId) {
+            $data['message_id'] = $messageId;
+            $this->sendRequest("editMessageText", $data);
+        } else {
+            $this->sendRequest("sendMessage", $data);
+        }
+    }
     public function showProductEditMenu(int $productId, int $messageId, int $categoryId, int $page): void
     {
         $product = $this->db->getProductById($productId);
@@ -2194,7 +3018,7 @@ class BotHandler
         }
 
         $text = "شما در حال ویرایش محصول \"{$product['name']}\"هستید.\n\n";
-        $text .= "کدام بخش را می‌خواهید ویرایش کنید؟";
+        $text .= "کدام بخش را می خواهید ویرایش کنید؟";
 
         $keyboard = [
             'inline_keyboard' => [
@@ -2225,81 +3049,136 @@ class BotHandler
         ]);
     }
 
+
+
+    // File: BotHandler.php
+
     public function showCartInEditMode($messageId): void
     {
-        if ($messageId) {
-            $this->deleteMessage($messageId);
-        }
-        // ۱. خواندن سبد خرید با متد جدید
-        $cartItems = $this->db->getUserCart($this->chatId);
+        if ($messageId) $this->deleteMessage($messageId);
 
+        $cartItems = $this->db->getUserCart($this->chatId);
         if (empty($cartItems)) {
             $this->Alert("سبد خرید شما خالی است.");
             $this->MainMenu();
             return;
         }
 
-        $newMessageIds = [];
-
-        // ۲. حلقه روی آیتم‌های خوانده شده از دیتابیس
+        // ۱. ایجاد "سبد خرید موقت" در فایل کاربر
+        $tempEditCart = [];
         foreach ($cartItems as $item) {
-            $productId = $item['id'];
-            $quantity = $item['quantity'];
+            $tempEditCart[$item['cart_item_id']] = $item['quantity'];
+        }
+        $this->fileHandler->addData($this->chatId, ['edit_cart_state' => $tempEditCart]);
 
-            // تابع generateProductCardText به 'quantity' نیاز دارد، پس آن را اضافه می‌کنیم
-            $item['quantity'] = $quantity;
-            $itemText = $this->generateProductCardText($item);
+        // ۲. گروه‌بندی آیتم‌ها بر اساس محصول
+        $groupedCart = [];
+        foreach ($cartItems as $item) {
+            $groupedCart[$item['product_id']][] = $item;
+        }
 
-            $keyboard = [
-                'inline_keyboard' => [
-                    [
-                        ['text' => '➕', 'callback_data' => "edit_cart_increase_{$productId}"],
-                        ['text' => "{$quantity} عدد", 'callback_data' => 'nope'],
-                        ['text' => '➖', 'callback_data' => "edit_cart_decrease_{$productId}"]
-                    ],
-                    [
-                        ['text' => '🗑 حذف کامل از سبد', 'callback_data' => "edit_cart_remove_{$productId}"]
-                    ]
-                ]
-            ];
+        $guideMessageRes = $this->sendRequest("sendMessage", [
+            'chat_id' => $this->chatId,
+            'text' => "✏️ *حالت ویرایش سبد خرید*\n\nتعداد هر آیتم را به دلخواه تغییر دهید.",
+            'parse_mode' => 'Markdown'
+        ]);
 
-            $res = null;
-            if (!empty($item['image_file_id'])) {
-                $res = $this->sendRequest("sendPhoto", [
-                    "chat_id" => $this->chatId,
-                    "photo" => $item['image_file_id'],
-                    "caption" => $itemText,
-                    "parse_mode" => "HTML",
-                    "reply_markup" => $keyboard
-                ]);
-            } else {
-                $res = $this->sendRequest("sendMessage", [
-                    "chat_id" => $this->chatId,
-                    "text" => $itemText,
-                    "parse_mode" => "HTML",
-                    "reply_markup" => $keyboard
-                ]);
-            }
+        $newMessageIds = [$guideMessageRes['result']['message_id'] ?? null];
 
+        // ۳. به ازای هر گروه (محصول)، یک کارت ویرایش هوشمند ایجاد کن
+        foreach ($groupedCart as $productId => $items) {
+            $res = $this->sendEditableCartCard($productId);
             if (isset($res['result']['message_id'])) {
                 $newMessageIds[] = $res['result']['message_id'];
             }
         }
 
-        $endEditText = "تغییرات مورد نظر را اعمال کرده و در پایان، دکمه زیر را بزنید:";
-        $endEditKeyboard = [['text' => '✅ مشاهده فاکتور نهایی', 'callback_data' => 'show_cart']];
-
+        $finalButtons = [
+            ['text' => '✅ تایید نهایی تمام تغییرات', 'callback_data' => 'edit_cart_confirm_all'],
+            ['text' => '❌ انصراف و بازگشت', 'callback_data' => 'edit_cart_cancel_all']
+        ];
         $navMessageRes = $this->sendRequest("sendMessage", [
             'chat_id' => $this->chatId,
-            'text' => $endEditText,
-            'reply_markup' => ['inline_keyboard' => [$endEditKeyboard]]
+            'text' => "پس از اتمام ویرایش، وضعیت نهایی را مشخص کنید:",
+            'reply_markup' => ['inline_keyboard' => [$finalButtons]]
         ]);
-
         if (isset($navMessageRes['result']['message_id'])) {
             $newMessageIds[] = $navMessageRes['result']['message_id'];
         }
 
-        $this->fileHandler->addData($this->chatId, ['message_ids' => $newMessageIds]);
+        $this->fileHandler->addData($this->chatId, ['message_ids' => array_filter($newMessageIds)]);
+    }
+
+    // File: BotHandler.php
+
+    private function sendEditableCartCard(int $productId, ?int $messageId = null)
+    {
+        $product = $this->db->getProductById($productId);
+        if (!$product) return null;
+
+        $tempEditCart = $this->fileHandler->getData($this->chatId, 'edit_cart_state') ?? [];
+        $userCart = $this->db->getUserCart($this->chatId); // سبد اصلی برای یافتن cart_item_id
+
+        $text = "🛍 <b>" . htmlspecialchars($product['name']) . "</b>\n";
+        $text .= "------------------------------------\n";
+        $text .= "لطفاً تعداد هر آیتم را مشخص کنید:";
+        $buttons = [];
+
+        $itemsToDisplay = [];
+        // ابتدا آیتم‌های موجود در سبد را اضافه می‌کنیم
+        foreach ($userCart as $item) {
+            if ($item['product_id'] == $productId) {
+                $itemsToDisplay[$item['variant_id'] ?? 0] = $item;
+            }
+        }
+        // سپس تمام ویژگی‌های محصول را اضافه می‌کنیم تا آنهایی که در سبد نیستند هم نمایش داده شوند
+        if (!empty($product['variants'])) {
+            foreach ($product['variants'] as $variant) {
+                if (!isset($itemsToDisplay[$variant['id']])) {
+                    // ساخت یک آیتم مجازی برای ویژگی‌های انتخاب نشده
+                    $itemsToDisplay[$variant['id']] = [
+                        'cart_item_id' => 'new_' . $variant['id'],
+                        'product_id' => $productId,
+                        'variant_id' => $variant['id'],
+                        'variant_name' => $variant['variant_name']
+                    ];
+                }
+            }
+        }
+
+        // --- ساخت دکمه‌ها ---
+        foreach ($itemsToDisplay as $item) {
+            $cartItemIdOrNew = $item['cart_item_id'];
+            $quantity = $tempEditCart[$cartItemIdOrNew] ?? 0;
+            $itemName = !empty($item['variant_name']) ? htmlspecialchars($item['variant_name']) : "تعداد در سبد:";
+
+            $decreaseCallback = ($quantity > 0) ? "edit_cart_item_dec_{$cartItemIdOrNew}_{$productId}" : 'nope';
+            $increaseCallback = "edit_cart_item_inc_{$cartItemIdOrNew}_{$productId}";
+
+            $buttons[] = [['text' => $itemName, 'callback_data' => 'nope']];
+            $buttons[] = [
+                ['text' => '➕', 'callback_data' => $increaseCallback],
+                ['text' => "{$quantity} عدد", 'callback_data' => 'nope'],
+                ['text' => '➖', 'callback_data' => $decreaseCallback]
+            ];
+        }
+
+        $keyboard = ['inline_keyboard' => $buttons];
+        $requestData = ['chat_id' => $this->chatId, 'parse_mode' => 'HTML', 'reply_markup' => $keyboard];
+
+        if ($messageId) {
+            $this->editTextOrCaption($this->chatId, $messageId, $text, $keyboard);
+            return ['result' => ['message_id' => $messageId]];
+        }
+
+        if (!empty($product['images'])) {
+            $requestData['photo'] = $product['images'][0];
+            $requestData['caption'] = $text;
+            return $this->sendRequest("sendPhoto", $requestData);
+        } else {
+            $requestData['text'] = $text;
+            return $this->sendRequest("sendMessage", $requestData);
+        }
     }
     public function activateInlineSearch($messageId = null): void
     {
@@ -2350,14 +3229,14 @@ class BotHandler
 
     public function showInvoiceManagementMenu($messageId = null): void
     {
-        $text = "🧾 بخش مدیریت فاکتورها.\n\nلطفاً وضعیت فاکتورهایی که می‌خواهید مشاهده کنید را انتخاب نمایید:";
+        $text = "🧾 بخش مدیریت فاکتورها.\n\nلطفاً وضعیت فاکتورهایی که می خواهید مشاهده کنید را انتخاب نمایید:";
         $keyboard = [
-        'inline_keyboard' => [
-            [['text' => '⏳ در انتظار پرداخت', 'callback_data' => 'admin_list_invoices_pending_page_1']], 
-            [['text' => '✅ تایید شده', 'callback_data' => 'admin_list_invoices_paid_page_1'], ['text' => '❌ لغو شده', 'callback_data' => 'admin_list_invoices_canceled_page_1']], 
-            [['text' => '📜 نمایش همه فاکتورها', 'callback_data' => 'admin_list_invoices_all_page_1']],
-            [['text' => '⬅️ بازگشت به پنل مدیریت', 'callback_data' => 'admin_panel_entry']]
-        ]
+            'inline_keyboard' => [
+                [['text' => '⏳ در انتظار پرداخت', 'callback_data' => 'admin_list_invoices_pending_page_1']],
+                [['text' => '✅ تایید شده', 'callback_data' => 'admin_list_invoices_paid_page_1'], ['text' => '❌ لغو شده', 'callback_data' => 'admin_list_invoices_canceled_page_1']],
+                [['text' => '📜 نمایش همه فاکتورها', 'callback_data' => 'admin_list_invoices_all_page_1']],
+                [['text' => '⬅️ بازگشت به پنل مدیریت', 'callback_data' => 'admin_panel_entry']]
+            ]
 
         ];
 
@@ -2473,72 +3352,86 @@ class BotHandler
         return null;
     }
 
-    public function showCategoryList($messageId = null): void
+    public function showCategoryList(?int $parentId = null, ?int $messageId = null): void
     {
-        $allCategories = $this->db->getAllCategories();
+        // گرفتن دسته‌ها
+        $categories = ($parentId === null)
+            ? $this->db->getRootCategories()
+            : $this->db->getSubcategories($parentId);
 
-        if (empty($allCategories)) {
-            $this->Alert("هیچ دسته‌بندی‌ای وجود ندارد.");
-            $this->showCategoryManagementMenu($messageId);
-            return;
-        }
+        $parentCategory = $parentId ? $this->db->getCategoryById($parentId) : null;
+        $pathText = $parentId ? $this->db->getCategoryPath($parentId) : '🏠 دسته‌بندی‌های اصلی';
 
-        $newMessageIds = [];
+        // متن نمایش
+        $text  = "✨ <b>مدیریت دسته‌بندی‌ها</b>\n";
+        $text .= "📍 مسیر: <b>" . htmlspecialchars($pathText) . "</b>\n\n";
+        $text .= "📂 یکی از دسته‌های زیر رو انتخاب کن تا زیرشاخه‌هاش رو ببینی یا مدیریت کنی:";
 
-        if ($messageId) {
-            $res = $this->sendRequest("editMessageText", [
-                "chat_id" => $this->chatId,
-                "message_id" => $messageId,
-                "text" => "⏳ لطفاً صبر کنید...",
-                "reply_markup" => ['inline_keyboard' => []]
-            ]);
-            $newMessageIds[] = $res['result']['message_id'] ?? null;
-        } else {
-            $this->Alert("در حال ارسال لیست دسته‌بندی‌ها...", false);
-        }
-        $previousMessageIds = $this->fileHandler->getMessageIds($this->chatId);
-        if (!empty($previousMessageIds)) {
-            $this->deleteMessages($previousMessageIds);
-        }
+        $buttons = [];
 
+        foreach ($categories as $category) {
+            $depth = $this->db->getCategoryDepth($category['id']);
+            $icon = $this->getCategoryIcon($depth);
 
-        foreach ($allCategories as $category) {
-            $categoryId = $category['id'];
-            $categoryName = htmlspecialchars($category['name']);
-
-            $keyboard = [
-                'inline_keyboard' => [
-                    [
-                        ['text' => '✏️ ویرایش', 'callback_data' => 'admin_edit_category_' . $categoryId],
-                        ['text' => '🗑 حذف', 'callback_data' => 'admin_delete_category_' . $categoryId]
-                    ]
-                ]
+            $buttons[] = [
+                ['text' => $icon . ' ' . htmlspecialchars($category['name']), 'callback_data' => 'admin_list_subcategories_' . $category['id']],
+                ['text' => '⚙️ تنظیمات', 'callback_data' => 'admin_cat_actions_' . $category['id']]
             ];
+        }
 
-            $res = $this->sendRequest("sendMessage", [
-                "chat_id" => $this->chatId,
-                "text" => "دسته: <b>{$categoryName}</b>",
-                "parse_mode" => "HTML",
-                "reply_markup" => $keyboard
-            ]);
-
-            if (isset($res['result']['message_id'])) {
-                $newMessageIds[] = $res['result']['message_id'];
+        // دکمه بازگشت
+        if ($parentCategory) {
+            if ($parentCategory['parent_id'] !== null) {
+                $backCallback = 'admin_list_subcategories_' . $parentCategory['parent_id'];
+                $buttons[] = [['text' => '🔙 بازگشت به «' . htmlspecialchars($parentCategory['name']) . '»', 'callback_data' => $backCallback]];
+            } else {
+                $buttons[] = [['text' => '🏠 بازگشت به دسته‌های اصلی', 'callback_data' => 'admin_category_list_root']];
             }
         }
 
-        $this->sendRequest("sendMessage", [
-            "chat_id" => $this->chatId,
-            "text" => "--- پایان لیست ---",
-            "reply_markup" => [
-                'inline_keyboard' => [
-                    [['text' => '⬅️ بازگشت', 'callback_data' => 'admin_manage_categories']]
-                ]
-            ]
-        ]);
+        // دکمه بازگشت به مدیریت
+        $buttons[] = [['text' => '⬅️ بازگشت به مدیریت', 'callback_data' => 'admin_manage_categories']];
 
-        $this->fileHandler->addData($this->chatId, ['message_ids' => $newMessageIds]);
+        $keyboard = ['inline_keyboard' => $buttons];
+
+        $data = [
+            'chat_id'      => $this->chatId,
+            'text'         => $text,
+            'parse_mode'   => 'HTML',
+            'reply_markup' => json_encode($keyboard, JSON_UNESCAPED_UNICODE),
+        ];
+
+        // اگر پیام قبلی وجود داشت ویرایش می‌کنیم
+        if ($messageId) {
+            $data['message_id'] = $messageId;
+            $this->sendRequest("editMessageText", $data);
+        } else {
+            // پاک‌سازی پیام‌های قدیمی
+            $previousMessageIds = $this->fileHandler->getMessageIds($this->chatId);
+            if (!empty($previousMessageIds)) {
+                $this->deleteMessages($previousMessageIds);
+            }
+            $res = $this->sendRequest("sendMessage", $data);
+            if (isset($res['result']['message_id'])) {
+                $this->fileHandler->addData($this->chatId, ['message_ids' => [$res['result']['message_id']]]);
+            }
+        }
     }
+
+    private function getCategoryIcon(int $depth): string
+    {
+        switch ($depth) {
+            case 0:
+                return '📂'; // ریشه
+            case 1:
+                return '📁'; // زیردسته
+            case 2:
+                return '🗂️'; // زیرزیر
+            default:
+                return '🗃️'; // سطح‌های پایین‌تر
+        }
+    }
+
 
     public function showInvoiceListByStatus(string $status, int $page = 1, $messageId = null): void
     {
@@ -2619,11 +3512,12 @@ class BotHandler
             $this->deleteMessages($MessageIds);
             $this->fileHandler->clearMessageIds($this->chatId);
         }
-        $text = "بخش مدیریت دسته‌بندی‌ها. لطفاً یک گزینه را انتخاب کنید:";
+        $text = "بخش مدیریت دسته بندی ها. لطفاً یک گزینه را انتخاب کنید:";
         $keyboard = [
             'inline_keyboard' => [
-                [['text' => '➕ افزودن دسته‌بندی جدید', 'callback_data' => 'admin_add_category']],
-                [['text' => '📜 لیست دسته‌بندی‌ها', 'callback_data' => 'admin_category_list']],
+                [['text' => '➕ افزودن دسته بندی جدید', 'callback_data' => 'admin_add_category']],
+                [['text' => '➕ افزودن زیردسته', 'callback_data' => 'admin_add_subcategory_select_parent']],
+                [['text' => '📜 لیست دسته بندی ها', 'callback_data' => 'admin_category_list']],
                 [['text' => '⬅️ بازگشت به پنل مدیریت', 'callback_data' => 'admin_panel_entry']]
             ]
         ];
@@ -2646,16 +3540,60 @@ class BotHandler
             $this->fileHandler->saveMessageId($this->chatId, $res['result']['message_id'] ?? null);
         }
     }
-    private function refreshCartItemCard(int $productId, int $messageId): void
+    public function promptForParentCategorySelection($messageId): void
     {
-        $product = $this->db->getProductById($productId);
-        $quantity = $this->db->getCartItemQuantity($this->chatId, $productId);
+        $allCategories = $this->db->getAllCategories();
 
-        if (!$product) {
-            $this->deleteMessage($messageId);
-            $this->Alert("خطا: محصول یافت نشد.", false);
+        if (empty($allCategories)) {
+            $this->Alert("ابتدا باید حداقل یک دسته بندی اصلی ایجاد کنید!");
+            $this->showCategoryManagementMenu($messageId);
             return;
         }
+
+        $buttons = [];
+
+        $generateButtons = function ($categories, $level = 0) use (&$generateButtons, &$buttons) {
+            foreach ($categories as $category) {
+                $prefix = str_repeat('— ', $level);
+                $buttons[] = [['text' => $prefix . $category['name'], 'callback_data' => 'select_parent_category_' . $category['id']]];
+                if (!empty($category['children'])) {
+                    $generateButtons($category['children'], $level + 1);
+                }
+            }
+        };
+
+        $generateButtons($allCategories);
+        $buttons[] = [['text' => '⬅️ بازگشت', 'callback_data' => 'admin_manage_categories']];
+
+        $keyboard = ['inline_keyboard' => $buttons];
+        $text = "لطفاً برای زیردسته جدید، یک دسته بندی والد انتخاب کنید:";
+
+        $this->sendRequest("editMessageText", [
+            'chat_id' => $this->chatId,
+            'message_id' => $messageId,
+            'text' => $text,
+            'reply_markup' => json_encode($keyboard)
+        ]);
+    }
+    private function refreshCartItemCard(int $cartItemId, int $messageId): void
+    {
+        // با استفاده از cartItemId، تمام اطلاعات مورد نیاز آیتم را از سبد خرید دریافت می‌کنیم
+        $cartItems = $this->db->getUserCart($this->chatId);
+        $item = null;
+        foreach ($cartItems as $cartItem) {
+            if ($cartItem['cart_item_id'] == $cartItemId) {
+                $item = $cartItem;
+                break;
+            }
+        }
+
+        if (!$item) {
+            $this->deleteMessage($messageId);
+            $this->Alert("محصول دیگر در سبد شما نیست.", false);
+            return;
+        }
+
+        $quantity = $item['quantity'];
 
         if ($quantity <= 0) {
             $this->deleteMessage($messageId);
@@ -2663,29 +3601,27 @@ class BotHandler
             return;
         }
 
-        $product['quantity'] = $quantity;
-        $newText = $this->generateProductCardText($product);
+        $itemText = $this->generateProductCardText($item);
 
         $newKeyboard = [
             'inline_keyboard' => [
                 [
-                    ['text' => '➕', 'callback_data' => "edit_cart_increase_{$productId}"],
+                    ['text' => '➕', 'callback_data' => "edit_cart_increase_{$cartItemId}"],
                     ['text' => "{$quantity} عدد", 'callback_data' => 'nope'],
-                    ['text' => '➖', 'callback_data' => "edit_cart_decrease_{$productId}"]
+                    ['text' => '➖', 'callback_data' => "edit_cart_decrease_{$cartItemId}"]
                 ],
                 [
-                    ['text' => '🗑 حذف کامل از سبد', 'callback_data' => "edit_cart_remove_{$productId}"]
+                    ['text' => '🗑 حذف کامل از سبد', 'callback_data' => "edit_cart_remove_{$cartItemId}"]
                 ]
             ]
         ];
 
-
-        if (!empty($product['image_file_id'])) {
-
+        // منطق ویرایش پیام (عکس یا متن)
+        if (!empty($item['image_file_id'])) {
             $this->sendRequest('editMessageCaption', [
                 'chat_id' => $this->chatId,
                 'message_id' => $messageId,
-                'caption' => $newText,
+                'caption' => $itemText,
                 'parse_mode' => 'HTML',
                 'reply_markup' => $newKeyboard
             ]);
@@ -2693,68 +3629,181 @@ class BotHandler
             $this->sendRequest('editMessageText', [
                 'chat_id' => $this->chatId,
                 'message_id' => $messageId,
-                'text' => $newText,
+                'text' => $itemText,
                 'parse_mode' => 'HTML',
                 'reply_markup' => $newKeyboard
             ]);
         }
     }
-    private function refreshProductCard(int $productId, ?int $messageId): void
+    public function promptForDeleteConfirmation(int $categoryId, int $messageId): void
     {
-        $quantityInCart = $this->db->getCartItemQuantity($this->chatId, $productId);
-        $isFavorite = $this->db->isProductInFavorites($this->chatId, $productId);
+        $category = $this->db->getCategoryById($categoryId);
+        if (!$category) {
+            $this->Alert("دسته بندی یافت نشد.");
+            return;
+        }
 
-        $keyboardRows = [];
-        $favoriteButtonText = $isFavorite ? '❤️ حذف از علاقه‌مندی' : '🤍 افزودن به علاقه‌مندی';
-        $keyboardRows[] = [['text' => $favoriteButtonText, 'callback_data' => 'toggle_favorite_' . $productId]];
+        $summary = $this->db->getCategoryContentSummary($categoryId);
+        $productCount = $summary['products'];
+        $subcategoryCount = $summary['subcategories'];
+        $categoryName = htmlspecialchars($category['name']);
 
-        if ($quantityInCart > 0) {
-            $keyboardRows[] = [
-                ['text' => '➕', 'callback_data' => "cart_increase_{$productId}"],
-                ['text' => "{$quantityInCart} عدد", 'callback_data' => 'nope'],
-                ['text' => '➖', 'callback_data' => "cart_decrease_{$productId}"]
+        $warningText = "❓ آیا از حذف دسته بندی \"<b>{$categoryName}</b>\" مطمئن هستید؟\n\n";
+        $keyboard = [];
+
+        if ($productCount > 0) {
+            $warningText .= "🔴 <b>هشدار:</b> این دسته بندی شامل <b>{$productCount} محصول</b> است و طبق قوانین پایگاه داده، قابل حذف نیست.\n\nابتدا باید تمام محصولات داخل آن را حذف کرده یا به دسته بندی دیگری منتقل کنید.";
+            $keyboard = [['text' => '🔙 بازگشت', 'callback_data' => "cancel_edit_category_" . $categoryId]];
+        } elseif ($subcategoryCount > 0) {
+            $warningText .= "🟡 <b>توجه:</b> این دسته بندی محصولی ندارد، اما با حذف آن، <b>{$subcategoryCount} زیرشاخه</b> موجود در آن به دسته بندی های اصلی (سطح بالا) منتقل خواهند شد.";
+            $keyboard = [
+                ['text' => '✅ بله، حذف کن', 'callback_data' => 'confirm_delete_category_' . $categoryId],
+                ['text' => '❌ انصراف', 'callback_data' => "cancel_edit_category_" . $categoryId]
             ];
         } else {
-            $keyboardRows[] = [['text' => '🛒 افزودن به سبد خرید', 'callback_data' => 'add_to_cart_' . $productId]];
+            $warningText .= "این یک دسته بندی خالی است و با خیال راحت می توانید آن را حذف کنید.";
+            $keyboard = [
+                ['text' => '✅ بله، حذف کن', 'callback_data' => 'confirm_delete_category_' . $categoryId],
+                ['text' => '❌ انصراف', 'callback_data' => "cancel_edit_category_" . $categoryId]
+            ];
         }
 
-        if ($messageId == null) {
-            $keyboardRows[] = [['text' => 'منوی اصلی', 'callback_data' => 'main_menu2']];
+        $this->sendRequest("editMessageText", [
+            "chat_id" => $this->chatId,
+            "message_id" => $messageId,
+            "text" => $warningText,
+            "parse_mode" => "HTML",
+            "reply_markup" => ['inline_keyboard' => [$keyboard]]
+        ]);
+    }
+    public function reconstructCategoryMessage(int $categoryId, int $messageId): void
+    {
+        $category = $this->db->getCategoryById($categoryId);
+
+        if (!$category) {
+            $this->Alert("خطا: دسته‌بندی دیگر وجود ندارد.");
+            $this->deleteMessage($messageId);
+            return;
         }
 
-        $newKeyboard = ['inline_keyboard' => $keyboardRows];
+        // ---------- اطلاعات پایه ----------
+        $categoryName = htmlspecialchars($category['name']);
+        $isActive = (bool)$category['is_active'];
+        $toggleStatusText = $isActive ? '🔴 غیرفعال کردن' : '🟢 فعال کردن';
 
-        if ($messageId) {
+        // ---------- دکمه‌های مرتب‌سازی ----------
+        $siblings = $this->db->getCategorySiblings($categoryId);
+        $categoryIds = array_column($siblings, 'id');
+        $currentIndex = array_search($categoryId, $categoryIds);
 
-            $this->sendRequest('editMessageReplyMarkup', [
-                'chat_id' => $this->chatId,
-                'message_id' => $messageId,
-                'reply_markup' => $newKeyboard
-            ]);
-        } else {
-            $product = $this->db->getProductById($productId);
-            $productText = $this->generateProductCardText($product);
-            if (!empty($product['image_file_id'])) {
-                $this->sendRequest("sendPhoto", ["chat_id" => $this->chatId, "photo" => $product['image_file_id'], "caption" => $productText, "parse_mode" => "HTML", "reply_markup" => $newKeyboard]);
-            } else {
-                $this->sendRequest("sendMessage", ["chat_id" => $this->chatId, "text" => $productText, "parse_mode" => "HTML", "reply_markup" => $newKeyboard]);
+        $sortButtons = [];
+        // دکمه‌ها فقط زمانی اضافه می‌شوند که بیش از یک آیتم برای مرتب‌سازی وجود داشته باشد
+        if ($currentIndex !== false && count($siblings) > 1) {
+            if ($currentIndex > 0) {
+                $sortButtons[] = ['text' => '🔼بالا', 'callback_data' => 'move_category_up_' . $categoryId];
+            }
+            if ($currentIndex < count($siblings) - 1) {
+                $sortButtons[] = ['text' => '🔽پایین', 'callback_data' => 'move_category_down_' . $categoryId];
             }
         }
+
+        // ---------- دکمه‌های عملیاتی و بازگشت ----------
+        $parentId = $category['parent_id'];
+        $backCallback = $parentId !== null
+            ? 'admin_list_subcategories_' . $parentId
+            : 'admin_category_list_root'; // بازگشت به ریشه
+
+        $keyboardRows = [];
+        if (!empty($sortButtons)) {
+            $keyboardRows[] = $sortButtons; // ردیف مرتب‌سازی
+        }
+        $summary = $this->db->getCategoryContentSummary($categoryId);
+        if ($summary['products'] > 0) {
+
+            $keyboardRows[] = [
+                ['text' => '📦 مشاهده محصولات (' . $summary['products'] . ')', 'callback_data' => 'admin_view_category_products_' . $categoryId]
+            ];
+        }
+        $keyboardRows[] = [
+            ['text' => '✏️ ویرایش نام', 'callback_data' => 'admin_edit_category_' . $categoryId],
+            ['text' => '🗑 حذف', 'callback_data' => 'admin_delete_category_' . $categoryId]
+        ];
+        $keyboardRows[] = [
+            ['text' => $toggleStatusText, 'callback_data' => 'toggle_cat_status_' . $categoryId],
+            ['text' => '🔄 جابجایی به والد دیگر', 'callback_data' => 'move_category_' . $categoryId]
+        ];
+        $keyboardRows[] = [
+            ['text' => '⬅️ بازگشت به لیست', 'callback_data' => $backCallback]
+        ];
+
+        $keyboard = ['inline_keyboard' => $keyboardRows];
+
+        // ---------- متن پیام ----------
+        $path = $this->db->getCategoryPath($categoryId);
+        $text  = "⚙️ <b>مدیریت دسته‌بندی</b>\n\n";
+        $text .= "<b>مسیر:</b> " . htmlspecialchars($path) . "\n\n";
+        $text .= "لطفاً عملیات مورد نظر را انتخاب کنید:";
+
+        $this->sendRequest("editMessageText", [
+            "chat_id"      => $this->chatId,
+            "message_id"   => $messageId,
+            "text"         => $text,
+            "parse_mode"   => "HTML",
+            "reply_markup" => $keyboard,
+        ]);
+    }
+
+    public function showCategoryProductsForAdmin(int $categoryId, int $messageId): void
+    {
+        $category = $this->db->getCategoryById($categoryId);
+        if (!$category) {
+            $this->Alert("خطا: دسته‌بندی یافت نشد.");
+            return;
+        }
+
+        $products = $this->db->getActiveProductsByCategoryId($categoryId);
+
+        $text = "📦 لیست محصولات در دسته‌بندی: <b>" . htmlspecialchars($category['name']) . "</b>\n\n";
+
+        if (empty($products)) {
+            $text .= "<i>هیچ محصولی در این دسته‌بندی وجود ندارد.</i>";
+        } else {
+            foreach ($products as $product) {
+                $price = number_format($product['price']);
+                $stock = $product['stock'];
+                $text .= "- <b>" . htmlspecialchars($product['name']) . "</b>";
+                $text .= "  <blockquote>موجودی: {$stock} عدد | قیمت: {$price} تومان</blockquote>\n\n";
+            }
+        }
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '⬅️ بازگشت به مدیریت دسته', 'callback_data' => 'admin_cat_actions_' . $categoryId]]
+            ]
+        ];
+
+        $this->sendRequest("editMessageText", [
+            "chat_id" => $this->chatId,
+            "message_id" => $messageId,
+            "text" => $text,
+            "parse_mode" => "HTML",
+            "reply_markup" => $keyboard
+        ]);
     }
     public function showAboutUs(): void
     {
 
-        $text = "🤖 *درباره توسعه‌دهنده ربات*\n\n";
-        $text .= "این ربات یک *نمونه‌کار حرفه‌ای* در زمینه طراحی و توسعه ربات‌های فروشگاهی در تلگرام است که توسط *امیر سلیمانی* طراحی و برنامه‌نویسی شده است.\n\n";
-        $text .= "✨ *ویژگی‌های برجسته ربات:*\n";
+        $text = "🤖 *درباره توسعه دهنده ربات*\n\n";
+        $text .= "این ربات یک *نمونه کار حرفه ای* در زمینه طراحی و توسعه ربات های فروشگاهی در تلگرام است که توسط *امیر سلیمانی* طراحی و برنامه نویسی شده است.\n\n";
+        $text .= "✨ *ویژگی های برجسته ربات:*\n";
         $text .= "🔹 پنل مدیریت کامل از داخل تلگرام (افزودن، ویرایش، حذف محصول)\n";
-        $text .= "🗂️ مدیریت هوشمند دسته‌بندی محصولات\n";
-        $text .= "🛒 سیستم سبد خرید و لیست علاقه‌مندی‌ها\n";
+        $text .= "🗂️ مدیریت هوشمند دسته بندی محصولات\n";
+        $text .= "🛒 سیستم سبد خرید و لیست علاقه مندی ها\n";
         $text .= "🔍 جستجوی پیشرفته با سرعت بالا (Inline Mode)\n";
         $text .= "💳 اتصال امن به درگاه پرداخت\n\n";
-        $text .= "💼 *آیا برای کسب‌وکار خود به یک ربات تلگرامی نیاز دارید؟*\n";
-        $text .= "ما آماده‌ایم تا ایده‌های شما را به یک ربات کاربردی و حرفه‌ای تبدیل کنیم.\n\n";
-        $text .= "📞 *راه ارتباط با توسعه‌دهنده:* [@Amir_soleimani_79](https://t.me/Amir_soleimani_79)";
+        $text .= "💼 *آیا برای کسب وکار خود به یک ربات تلگرامی نیاز دارید؟*\n";
+        $text .= "ما آماده ایم تا ایده های شما را به یک ربات کاربردی و حرفه ای تبدیل کنیم.\n\n";
+        $text .= "📞 *راه ارتباط با توسعه دهنده:* [@Amir_soleimani_79](https://t.me/Amir_soleimani_79)";
 
         $keyboard = [
             'inline_keyboard' => [
@@ -2852,117 +3901,402 @@ class BotHandler
 
     public function showUserProductList($categoryId, $page = 1, $messageId = null): void
     {
-        $cartItems = $this->db->getUserCart($this->chatId);
-        $favoriteProductIds = array_column($this->db->getUserFavorites($this->chatId), 'id');
-        $cartProductIds = array_column($cartItems, 'quantity', 'id');
-
-        $previousMessageIds = $this->fileHandler->getMessageIds($this->chatId);
-        if (!empty($previousMessageIds)) {
-            $this->deleteMessages($previousMessageIds);
-            $this->fileHandler->clearMessageIds($this->chatId);
+        $category = $this->db->getCategoryById($categoryId);
+        if (!$category) {
+            $this->Alert("دسته‌بندی یافت نشد.");
+            return;
         }
+
         $allProducts = $this->db->getActiveProductsByCategoryId($categoryId);
 
         if (empty($allProducts)) {
             $this->Alert("متاسفانه محصولی در این دسته‌بندی یافت نشد.");
-            return;
-        }
-        if ($messageId) {
+            // در صورت خالی بودن، به منوی والد یا اصلی باز می‌گردیم
+            $backCallback = $category['parent_id']
+                ? 'category_' . $category['parent_id']
+                : 'main_menu';
             $this->sendRequest("editMessageText", [
                 "chat_id" => $this->chatId,
                 "message_id" => $messageId,
-                "text" => "⏳ بارگذاری محصولات  ...",
-                "reply_markup" => ['inline_keyboard' => []]
+                "text" => "هیچ محصولی یافت نشد.",
+                "reply_markup" => ['inline_keyboard' => [[['text' => 'بازگشت', 'callback_data' => $backCallback]]]]
             ]);
+            return;
         }
 
-        $perPage = 5;
+        $perPage = 8; // تعداد محصولات بیشتر در هر صفحه
         $totalPages = ceil(count($allProducts) / $perPage);
         $offset = ($page - 1) * $perPage;
         $productsOnPage = array_slice($allProducts, $offset, $perPage);
 
-        $newMessageIds = [];
+        $text = "محصولات دسته‌بندی: <b>" . htmlspecialchars($category['name']) . "</b>\n";
+        $text .= "صفحه {$page} از {$totalPages}\n\n";
+        $text .= "لطفاً محصول مورد نظر خود را انتخاب کنید:";
 
+        $buttons = [];
+        $row = [];
         foreach ($productsOnPage as $product) {
-            $productText = $this->generateProductCardText($product);
-            $productId = $product['id'];
-            $keyboardRows = [];
-
-            $isFavorite = in_array($productId, $favoriteProductIds);
-            $favoriteButtonText = $isFavorite ? '❤️ حذف از علاقه‌مندی' : '🤍 افزودن به علاقه‌مندی';
-            $keyboardRows[] = [['text' => $favoriteButtonText, 'callback_data' => 'toggle_favorite_' . $productId]];
-
-            if (isset($cartProductIds[$productId])) {
-                $quantity = $cartProductIds[$productId];
-                $keyboardRows[] = [
-                    ['text' => '➕', 'callback_data' => "cart_increase_{$productId}"],
-                    ['text' => "{$quantity} عدد", 'callback_data' => 'nope'],
-                    ['text' => '➖', 'callback_data' => "cart_decrease_{$productId}"]
-                ];
-            } else {
-                $keyboardRows[] = [['text' => '🛒 افزودن به سبد خرید', 'callback_data' => 'add_to_cart_' . $productId]];
-            }
-
-            $productKeyboard = ['inline_keyboard' => $keyboardRows];
-
-            $res = null;
-            if (!empty($product['image_file_id'])) {
-                $res = $this->sendRequest("sendPhoto", [
-                    "chat_id" => $this->chatId,
-                    "photo" => $product['image_file_id'],
-                    "caption" => $productText,
-                    "parse_mode" => "HTML",
-                    "reply_markup" => $productKeyboard
-                ]);
-            } else {
-                $res = $this->sendRequest("sendMessage", [
-                    "chat_id" => $this->chatId,
-                    "text" => $productText,
-                    "parse_mode" => "HTML",
-                    "reply_markup" => $productKeyboard
-                ]);
-            }
-
-            if (isset($res['result']['message_id'])) {
-                $newMessageIds[] = $res['result']['message_id'];
+            // دکمه‌ای برای مشاهده کارت هر محصول با اطلاعات صفحه‌بندی
+            $callbackData = 'user_view_product_' . $product['id'] . '_cat_' . $categoryId . '_page_' . $page;
+            $row[] = ['text' => htmlspecialchars($product['name']), 'callback_data' => $callbackData];
+            if (count($row) >= 2) {
+                $buttons[] = $row;
+                $row = [];
             }
         }
+        if (!empty($row)) {
+            $buttons[] = $row;
+        }
 
-        $navText = "--- صفحه {$page} از {$totalPages} ---";
         $navButtons = [];
         if ($page > 1) {
-            $prevPage = $page - 1;
-            $navButtons[] = ['text' => "▶️ صفحه قبل", 'callback_data' => "user_list_products_cat_{$categoryId}_page_{$prevPage}"];
+            $navButtons[] = ['text' => "◀️ قبل", 'callback_data' => "user_list_products_cat_{$categoryId}_page_" . ($page - 1)];
         }
         if ($page < $totalPages) {
-            $nextPage = $page + 1;
-            $navButtons[] = ['text' => "صفحه بعد ◀️", 'callback_data' => "user_list_products_cat_{$categoryId}_page_{$nextPage}"];
+            $navButtons[] = ['text' => "بعد ▶️", 'callback_data' => "user_list_products_cat_{$categoryId}_page_" . ($page + 1)];
         }
-
-        $navKeyboard = [];
         if (!empty($navButtons)) {
-            $navKeyboard[] = $navButtons;
+            $buttons[] = $navButtons;
         }
-        $navKeyboard[] = [['text' => '⬅️ بازگشت به منوی اصلی', 'callback_data' => 'main_menu']];
 
-        $navMessageRes = $this->sendRequest("sendMessage", [
-            'chat_id' => $this->chatId,
-            'text' => $navText,
-            'reply_markup' => ['inline_keyboard' => $navKeyboard]
-        ]);
-        if (isset($navMessageRes['result']['message_id'])) {
-            $newMessageIds[] = $navMessageRes['result']['message_id'];
+        // دکمه بازگشت به دسته‌بندی والد یا منوی اصلی
+        $backCallback = $category['parent_id'] !== null
+            ? 'category_' . $category['parent_id']
+            : 'main_menu';
+        $buttons[] = [['text' => '⬅️ بازگشت', 'callback_data' => $backCallback]];
+
+        $keyboard = ['inline_keyboard' => $buttons];
+
+        // اگر messageId وجود داشت، پیام را ویرایش می‌کنیم، در غیر این صورت یک پیام جدید ارسال می‌شود
+        if ($messageId) {
+            $this->sendRequest("editMessageText", [
+                'chat_id' => $this->chatId,
+                'message_id' => $messageId,
+                'text' => $text,
+                'parse_mode' => 'HTML',
+                'reply_markup' => $keyboard
+            ]);
+        } else {
+            $this->sendRequest("sendMessage", [
+                'chat_id' => $this->chatId,
+                'text' => $text,
+                'parse_mode' => 'HTML',
+                'reply_markup' => $keyboard
+            ]);
         }
-        $this->fileHandler->addData($this->chatId, ['message_ids' => $newMessageIds]);
     }
-    public function showSingleProduct(int $productId): void
+
+    public function showSubcategoryMenu(int $parentId, int $messageId): void
+    {
+        $parentCategory = $this->db->getCategoryById($parentId);
+        $subcategories = $this->db->getSubcategories($parentId);
+
+        if (!$parentCategory) {
+            $this->Alert("دسته بندی یافت نشد.");
+            return;
+        }
+
+        $text = "✨ دسته فعلی: «<b>" . htmlspecialchars($parentCategory['name']) . "</b>» \n👇 از بین زیرشاخه های زیر یکی رو انتخاب کن:";
+
+        $buttons = [];
+        $row = [];
+        foreach ($subcategories as $subcategory) {
+            if ($subcategory['is_active']) {
+                $row[] = ['text' => $subcategory['name'], 'callback_data' => 'category_' . $subcategory['id']];
+                if (count($row) >= 2) {
+                    $buttons[] = $row;
+                    $row = [];
+                }
+            }
+        }
+        if (!empty($row)) {
+            $buttons[] = $row;
+        }
+
+        if ($parentCategory['parent_id'] !== null) {
+            $buttons[] = [['text' => '⬅️ بازگشت به دسته بندی قبلی', 'callback_data' => 'category_' . $parentCategory['parent_id']]];
+        } else {
+            $buttons[] = [['text' => '⬅️ بازگشت به منوی اصلی', 'callback_data' => 'main_menu']];
+        }
+
+
+        $keyboard = ['inline_keyboard' => $buttons];
+
+        $this->sendRequest("editMessageText", [
+            'chat_id' => $this->chatId,
+            'message_id' => $messageId,
+            'text' => $text,
+            'parse_mode' => 'HTML',
+            'reply_markup' => json_encode($keyboard)
+        ]);
+    }
+   
+    public function publishProductToChannel(int $productId): void
+    {
+        $channelId = $this->db->getSettingValue('channel_id');
+        if (empty($channelId) || !str_starts_with($channelId, '@')) {
+            Logger::log('warning', 'Channel Publishing Skipped', 'Channel ID is not set or invalid.', ['product_id' => $productId]);
+            $this->Alert("محصول ذخیره شد اما به دلیل عدم تنظیم صحیح کانال، در آن منتشر نشد.", true);
+            return;
+        }
+
+        $product = $this->db->getProductById($productId);
+        if (!$product) {
+            Logger::log('error', 'Channel Publishing Failed', 'Product not found.', ['product_id' => $productId]);
+            return;
+        }
+
+        $caption = $this->generateProductCardText($product);
+        $caption = mb_substr($caption, 0, 1000); // محدودیت کپشن
+
+        $keyboard = [
+            'inline_keyboard' => [
+                [['text' => '🛒 مشاهده و خرید محصول', 'url' => $this->botLink . '?start=product_' . $productId]]
+            ]
+        ];
+
+        if (!empty($product['images'])) {
+            $mainImageFileId = $product['images'][0];
+
+            $messageSent = $this->sendRequest('sendPhoto', [
+                'chat_id'      => $channelId,
+                'photo'        => $mainImageFileId,
+                'caption'      => $caption,
+                'parse_mode'   => 'HTML',
+                'reply_markup' => $keyboard
+            ]);
+        } else {
+            $messageSent = $this->sendRequest('sendMessage', [
+                'chat_id'      => $channelId,
+                'text'         => $caption,
+                'parse_mode'   => 'HTML',
+                'reply_markup' => $keyboard
+            ]);
+        }
+
+        if ($messageSent && isset($messageSent['result']['message_id'])) {
+            $channelMessageId = $messageSent['result']['message_id'];
+            $this->db->updateChannelMessageId($productId, $channelMessageId);
+            $this->Alert("✅ محصول با موفقیت در کانال منتشر شد.", false);
+        } else {
+            $this->Alert("❌ محصول ذخیره شد اما در انتشار آن در کانال خطایی رخ داد.", true);
+            Logger::log('error', 'Channel Publishing Failed', 'Telegram API call failed.', ['product_id' => $productId, 'response' => $messageSent]);
+        }
+    }
+
+    public function showProductImages(int $productId): void
+    {
+        $product = $this->db->getProductById($productId);
+        if (!$product || empty($product['images'])) {
+            $this->Alert("این محصول تصویری برای نمایش ندارد.");
+            return;
+        }
+
+        $mediaGroup = [];
+        foreach ($product['images'] as $fileId) {
+            $mediaGroup[] = ['type' => 'photo', 'media' => $fileId];
+        }
+
+        $mediaGroupResponse = $this->sendRequest('sendMediaGroup', ['chat_id' => $this->chatId, 'media' => json_encode($mediaGroup)]);
+        $navMessageResponse = $this->sendRequest('sendMessage', [
+            'chat_id' => $this->chatId,
+            'text' => '📸 گالری تصاویر محصول "' . htmlspecialchars($product['name']) . '"',
+            'reply_markup' => ['inline_keyboard' => [[['text' => '🔙 بازگشت به محصول', 'callback_data' => 'view_product_' . $productId]]]]
+        ]);
+
+        $newMessageIds = [];
+        if (isset($mediaGroupResponse['ok']) && $mediaGroupResponse['ok'] === true) {
+            $newMessageIds = array_column($mediaGroupResponse['result'], 'message_id');
+        }
+        if (isset($navMessageResponse['result']['message_id'])) {
+            $newMessageIds[] = $navMessageResponse['result']['message_id'];
+        }
+
+        if (!empty($newMessageIds)) {
+            $this->fileHandler->addMessageId($this->chatId, $newMessageIds);
+        }
+    }
+
+
+
+    
+    public function promptQuantityManager(int $productId, ?int $messageId = null): void
     {
         $product = $this->db->getProductById($productId);
         if (!$product) {
-            $this->Alert("متاسفانه محصول مورد نظر یافت نشد یا حذف شده است.");
-            $this->MainMenu();
+            $this->Alert("محصول یافت نشد.");
             return;
         }
-        $this->refreshProductCard($productId, null);
+
+        $stateData = json_decode($this->fileHandler->getStateData($this->chatId) ?? '{}', true);
+        $tempCart = $stateData['temp_quantity_cart'] ?? [];
+        $hasVariants = !empty($product['variants']);
+
+        $text = "لطفاً تعداد مورد نظر را مشخص کرده و در پایان تایید کنید:";
+        $buttons = [];
+        $totalPrice = 0;
+        $totalItems = 0;
+
+        if ($hasVariants) {
+            // --- منطق برای محصولات دارای ویژگی ---
+            foreach ($product['variants'] as $variant) {
+                $variantId = $variant['id'];
+                $quantity = $tempCart[$variantId] ?? 0;
+                $totalPrice += $quantity * (float)$variant['price'];
+                $totalItems += $quantity;
+
+                $buttons[] = [['text' => "{$variant['variant_name']} - " . number_format($variant['price']) . " تومان", 'callback_data' => 'nope']];
+                if ((int)$variant['stock'] > 0) {
+                    // *** اصلاح کلیدی: غیرفعال کردن دکمه منفی وقتی تعداد صفر است ***
+                    $decreaseCallback = ($quantity > 0) ? "quantity_adjust_dec_{$variantId}_{$productId}" : 'nope';
+
+                    $buttons[] = [
+                        ['text' => '➕', 'callback_data' => "quantity_adjust_inc_{$variantId}_{$productId}"],
+                        ['text' => "{$quantity} عدد", 'callback_data' => 'nope'],
+                        ['text' => '➖', 'callback_data' => $decreaseCallback]
+                    ];
+                }
+            }
+        } else {
+            // --- منطق برای محصولات ساده ---
+            $simpleProductId = 0;
+            $quantity = $tempCart[$simpleProductId] ?? 0;
+            $totalPrice += $quantity * (float)$product['price'];
+            $totalItems += $quantity;
+
+            $buttons[] = [['text' => htmlspecialchars($product['name']), 'callback_data' => 'nope']];
+            if ((int)$product['stock'] > 0) {
+                // *** اصلاح کلیدی: غیرفعال کردن دکمه منفی وقتی تعداد صفر است ***
+                $decreaseCallback = ($quantity > 0) ? "quantity_adjust_dec_{$simpleProductId}_{$productId}" : 'nope';
+
+                $buttons[] = [
+                    ['text' => '➕', 'callback_data' => "quantity_adjust_inc_{$simpleProductId}_{$productId}"],
+                    ['text' => "{$quantity} عدد", 'callback_data' => 'nope'],
+                    ['text' => '➖', 'callback_data' => $decreaseCallback]
+                ];
+            }
+        }
+
+        if ($totalItems > 0) {
+            $text .= "\n\n<b>مجموع انتخاب شما:</b>\n- تعداد کل: {$totalItems} عدد\n- مبلغ کل: " . number_format($totalPrice) . " تومان";
+            $buttons[] = [['text' => '✅ تایید و افزودن به سبد', 'callback_data' => 'quantity_confirm_' . $productId]];
+        }
+
+        $buttons[] = [['text' => '🔙 بازگشت به محصول (بدون ذخیره)', 'callback_data' => 'quantity_manager_back_' . $productId]];
+
+        $newKeyboard = ['inline_keyboard' => $buttons];
+
+        if ($messageId) {
+            $this->editTextOrCaption($this->chatId, $messageId, $text, $newKeyboard);
+        } else {
+            $hasImage = !empty($product['images']);
+            $mainImageFileId = $hasImage ? $product['images'][0] : null;
+            if ($hasImage) {
+                $this->sendRequest("sendPhoto", ["chat_id" => $this->chatId, "photo" => $mainImageFileId, "caption" => $text, "parse_mode" => "HTML", "reply_markup" => $newKeyboard]);
+            } else {
+                $this->sendRequest("sendMessage", ["chat_id" => $this->chatId, "text" => $text, "parse_mode" => "HTML", "reply_markup" => $newKeyboard]);
+            }
+        }
+    }
+
+
+
+    public function showUserSingleProductCard(int $productId, ?int $fromCategoryId = null, ?int $fromPage = null, ?int $messageId = null): void
+    {
+        // ذخیره اطلاعات بازگشت (زمینه) در فایل
+        $returnContext = ['category_id' => $fromCategoryId, 'page' => $fromPage];
+        $this->fileHandler->addData($this->chatId, ['product_view_context' => $returnContext]);
+
+        $product = $this->db->getProductById($productId);
+        if (!$product) {
+            $this->Alert("محصول یافت نشد.", true);
+            if ($messageId) $this->deleteMessage($messageId);
+            return;
+        }
+
+        $quantityInCart = $this->db->getCartItemQuantity($this->chatId, $productId, null);
+        $isFavorite = $this->db->isProductInFavorites($this->chatId, $productId);
+        $totalStock = empty($product['variants']) ? (int)$product['stock'] : (int)array_sum(array_column($product['variants'], 'stock'));
+
+        if ($quantityInCart > 0) {
+            $product['quantity'] = $quantityInCart;
+        }
+        $productText = $this->generateProductCardText($product);
+
+        $keyboardRows = [];
+        $hasVariants = !empty($product['variants']);
+
+        // ردیف اول: علاقه‌مندی و گالری
+        $mainActionsRow = [];
+        $favoriteButtonText = $isFavorite ? '❤️ حذف از علاقه‌مندی' : '🤍 افزودن به علاقه‌مندی';
+        $mainActionsRow[] = ['text' => $favoriteButtonText, 'callback_data' => 'toggle_favorite_' . $productId];
+        if (isset($product['images']) && count($product['images']) > 1) {
+            $mainActionsRow[] = ['text' => '🖼 مشاهده تصاویر', 'callback_data' => 'view_product_images_' . $productId];
+        }
+        $keyboardRows[] = $mainActionsRow;
+
+        $cartButtonsRow = $this->generateCartActionButtons($product, $quantityInCart, $totalStock);
+        if ($cartButtonsRow) {
+            $keyboardRows[] = $cartButtonsRow;
+        }
+
+        // ردیف سوم: دکمه بازگشت
+        if ($fromCategoryId !== null && $fromPage !== null) {
+            $keyboardRows[] = [['text' => '⬅️ بازگشت به لیست محصولات', 'callback_data' => "user_list_products_cat_{$fromCategoryId}_page_{$fromPage}"]];
+        } elseif ($messageId === null) {
+            $keyboardRows[] = [['text' => '🏠 بازگشت به منوی اصلی', 'callback_data' => 'main_menu2']];
+        }
+
+        $newKeyboard = ['inline_keyboard' => $keyboardRows];
+
+        // --- منطق ارسال/ویرایش پیام ---
+        if ($messageId) {
+            $this->editTextOrCaption($this->chatId, $messageId, $productText, $newKeyboard);
+        } else {
+            $hasImage = !empty($product['images']);
+            $mainImageFileId = $hasImage ? $product['images'][0] : null;
+            if ($hasImage) {
+                $this->sendRequest("sendPhoto", ["chat_id" => $this->chatId, "photo" => $mainImageFileId, "caption" => $productText, "parse_mode" => "HTML", "reply_markup" => $newKeyboard]);
+            } else {
+                $this->sendRequest("sendMessage", ["chat_id" => $this->chatId, "text" => $productText, "parse_mode" => "HTML", "reply_markup" => $newKeyboard]);
+            }
+        }
+    }
+
+    // File: BotHandler.php
+
+    private function generateCartActionButtons(array $product, int $quantityInCart, int $totalStock): ?array
+    {
+        $productId = $product['id'];
+        $callback = 'open_quantity_manager_' . $productId; 
+
+        if ($quantityInCart > 0) {
+            return [['text' => "🛒 ویرایش تعداد ({$quantityInCart} عدد)", 'callback_data' => $callback]];
+        }
+        if ($totalStock > 0) {
+            return [['text' => '🛒 افزودن به سبد خرید', 'callback_data' => $callback]];
+        }
+
+        return null;
+    }
+    private function editTextOrCaption(int $chatId, int $messageId, string $text, ?array $replyMarkup = null): void
+    {
+        $params = [
+            "chat_id"    => $chatId,
+            "message_id" => $messageId,
+            "caption"    => $text,
+            "parse_mode" => "HTML"
+        ];
+        if ($replyMarkup) {
+            $params['reply_markup'] = $replyMarkup;
+        }
+
+        $response = $this->sendRequest("editMessageCaption", $params);
+
+        if (isset($response['ok']) && !$response['ok'] ) {
+            unset($params['caption']);
+            $params['text'] = $text;
+            $this->sendRequest("editMessageText", $params);
+        }
     }
 }

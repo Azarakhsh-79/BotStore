@@ -1,0 +1,2 @@
+[2025-09-15 10:40:12] [error] Telegram API Request Failed - Method: deleteMessage | {"request_data":{"chat_id":199057701,"message_id":2754},"response":"{\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: message can't be deleted for everyone\"}","http_code":400,"curl_error":null}
+--------------------------------------------------------------------------------

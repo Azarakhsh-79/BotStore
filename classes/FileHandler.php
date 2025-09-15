@@ -50,6 +50,11 @@ class FileHandler
         $this->saveAllData($data, $fileKey);
     }
 
+    public function getData(int|string $chatId, string $key, $fileKey = null): mixed
+    {
+        $data = $this->getAllData($fileKey);
+        return $data[$chatId][$key] ?? null;
+    }
     public function saveState(int|string $chatId, mixed $state, $fileKey = null): void
     {
         $data = $this->getAllData($fileKey);
@@ -65,10 +70,18 @@ class FileHandler
 
     
 
-    public function addMessageId(int|string $chatId, int|string $messageId, $fileKey = null): void
+      
+    public function addMessageId(int|string $chatId, int|string|array $messageId, $fileKey = null): void
     {
         $data = $this->getAllData($fileKey);
-        $data[$chatId]['message_ids'][] = $messageId;
+        if (!isset($data[$chatId]['message_ids'])) {
+            $data[$chatId]['message_ids'] = [];
+        }
+        if (is_array($messageId)) {
+            $data[$chatId]['message_ids'] = array_merge($data[$chatId]['message_ids'], $messageId);
+        } else {
+            $data[$chatId]['message_ids'][] = $messageId;
+        }
         $this->saveAllData($data, $fileKey);
     }
 

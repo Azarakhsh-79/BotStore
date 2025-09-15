@@ -47,20 +47,19 @@ class Database
 
 
 
-    
+
     //    -------------------------------- users
     public function saveUser($user, $entryToken = null): void
     {
         $sql = "
-            INSERT INTO users (chat_id, username, first_name, last_name, language, last_activity, entry_token) 
-            VALUES (?, ?, ?, ?, ?, NOW(), ?)
-            ON DUPLICATE KEY UPDATE 
-                username = VALUES(username), 
-                first_name = VALUES(first_name), 
-                last_name = VALUES(last_name), 
-                language = VALUES(language), 
-                last_activity = NOW()
-        ";
+        INSERT INTO users (chat_id, username, first_name, last_name, language, entry_token) 
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE 
+            username = VALUES(username), 
+            first_name = VALUES(first_name), 
+            last_name = VALUES(last_name), 
+            language = VALUES(language)
+    ";
 
         $params = [
             $user['id'],
@@ -73,6 +72,7 @@ class Database
 
         $this->query($sql, $params);
     }
+
 
     public function getUserFavorites(int $chatId): array
     {
@@ -171,18 +171,7 @@ class Database
         $stmt = $this->query("SELECT * FROM users WHERE username = ? LIMIT 1", [$username]);
         return $stmt ? $stmt->fetch() : false;
     }
-   
 
-    public function getCartItemQuantity(int $chatId, int $productId): int
-    {
-        $user = $this->getUserByChatIdOrUsername($chatId);
-        if (!$user) return 0;
-        $userId = $user['id'];
-
-        $sql = "SELECT quantity FROM carts WHERE user_id = ? AND product_id = ?";
-        $stmt = $this->query($sql, [$userId, $productId]);
-        return $stmt ? (int)$stmt->fetchColumn() : 0;
-    }
     public function getUserLanguage($chatId): string
     {
         $stmt = $this->query("SELECT language FROM users WHERE chat_id = ? LIMIT 1", [$chatId]);
@@ -215,7 +204,7 @@ class Database
     }
     public function getUsersBatch($limit = 20, $offset = 0): array
     {
-        $sql = "SELECT id, chat_id, username, first_name, last_name, join_date, last_activity, status, language, is_admin, entry_token 
+        $sql = "SELECT id, chat_id, username, first_name, last_name, join_date, status, language, is_admin, entry_token 
                 FROM users 
                 ORDER BY id ASC 
                 LIMIT ? OFFSET ?";
@@ -233,71 +222,20 @@ class Database
         return $stmt ? $stmt->fetch() : false;
     }
 
-    public function getUserCart(int $chatId): array
-    {
-        $sql = "
-        SELECT p.id, p.name, p.price, p.image_file_id, c.quantity 
-        FROM carts c
-        JOIN products p ON c.product_id = p.id
-        JOIN users u ON c.user_id = u.id
-        WHERE u.chat_id = ?
-    ";
-        $stmt = $this->query($sql, [$chatId]);
-        return $stmt ? $stmt->fetchAll() : [];
-    }
-
-    public function addToCart(int $chatId, int $productId, int $quantity = 1): bool
-    {
-        $user = $this->getUserByChatIdOrUsername($chatId);
-        if (!$user) return false;
-        $userId = $user['id'];
-
-        $sql = "
-        INSERT INTO carts (user_id, product_id, quantity) 
-        VALUES (?, ?, ?)
-        ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
-    ";
-        $stmt = $this->query($sql, [$userId, $productId, $quantity]);
-        return $stmt !== false;
-    }
-
-    public function updateCartQuantity(int $chatId, int $productId, int $newQuantity): bool
-    {
-        $user = $this->getUserByChatIdOrUsername($chatId);
-        if (!$user) return false;
-        $userId = $user['id'];
-
-        if ($newQuantity <= 0) {
-            return $this->removeFromCart($chatId, $productId);
-        }
-
-        $sql = "UPDATE carts SET quantity = ? WHERE user_id = ? AND product_id = ?";
-        $stmt = $this->query($sql, [$newQuantity, $userId, $productId]);
-        return $stmt && $stmt->rowCount() > 0;
-    }
 
 
-    public function removeFromCart(int $chatId, int $productId): bool
-    {
-        $user = $this->getUserByChatIdOrUsername($chatId);
-        if (!$user) return false;
-        $userId = $user['id'];
+  
 
-        $sql = "DELETE FROM carts WHERE user_id = ? AND product_id = ?";
-        $stmt = $this->query($sql, [$userId, $productId]);
-        return $stmt && $stmt->rowCount() > 0;
-    }
+   
 
-    public function clearUserCart(int $chatId): bool
-    {
-        $user = $this->getUserByChatIdOrUsername($chatId);
-        if (!$user) return false;
-        $userId = $user['id'];
+   
 
-        $sql = "DELETE FROM carts WHERE user_id = ?";
-        $stmt = $this->query($sql, [$userId]);
-        return $stmt !== false;
-    }
+
+
+
+
+
+ 
 
     //    -------------------------------- admins
     public function isAdmin($chatId): bool
@@ -312,8 +250,204 @@ class Database
         return $stmt ? $stmt->fetchAll() : [];
     }
 
+    public function getStatsSummary(): array
+    {
+        $todayStart = date('Y-m-d 00:00:00');
+        $lowStockThreshold = 5; // آستانه موجودی کم را ۵ در نظر می‌گیریم
+
+        $queries = [
+            'total_users' => "SELECT COUNT(id) FROM users",
+            'new_users_today' => "SELECT COUNT(id) FROM users WHERE created_at >= '{$todayStart}'",
+            'total_products' => "SELECT COUNT(id) FROM products",
+            'low_stock_products' => "SELECT COUNT(id) FROM products WHERE stock > 0 AND stock < {$lowStockThreshold}",
+            'pending_invoices' => "SELECT COUNT(id) FROM invoices WHERE status = 'pending'",
+            'todays_revenue' => "SELECT SUM(total_amount) FROM invoices WHERE status = 'paid' AND updated_at >= '{$todayStart}'"
+        ];
+
+        $stats = [];
+        foreach ($queries as $key => $sql) {
+            $stmt = $this->query($sql);
+            $stats[$key] = $stmt ? ($stmt->fetchColumn() ?? 0) : 0;
+        }
+
+        return [
+            'total_users' => (int)$stats['total_users'],
+            'new_users_today' => (int)$stats['new_users_today'],
+            'total_products' => (int)$stats['total_products'],
+            'low_stock_products' => (int)$stats['low_stock_products'],
+            'pending_invoices' => (int)$stats['pending_invoices'],
+            'todays_revenue' => (float)$stats['todays_revenue'],
+        ];
+    }
+
+
+    //    -------------------------------- cart
+
+
+    public function getCartItemQuantityById(int $cartItemId): int
+    {
+        $sql = "SELECT quantity FROM carts WHERE id = ?";
+        $stmt = $this->query($sql, [$cartItemId]);
+        return $stmt ? (int)$stmt->fetchColumn() : 0;
+    }
+
+
+    public function setCartItemQuantity(int $chatId, int $productId, ?int $variantId, int $quantity): bool
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) return false;
+        $userId = $user['id'];
+
+        if ($quantity <= 0) {
+            $sql = "DELETE FROM carts WHERE user_id = ? AND product_id = ? AND variant_id <=> ?";
+            $stmt = $this->query($sql, [$userId, $productId, $variantId]);
+            return $stmt !== false;
+        }
+
+        $sql = "
+        INSERT INTO carts (user_id, product_id, variant_id, quantity) 
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE quantity = VALUES(quantity)
+        ";
+        $stmt = $this->query($sql, [$userId, $productId, $variantId, $quantity]);
+        return $stmt !== false;
+    }
+    public function clearUserCart(int $chatId): bool
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) return false;
+        $userId = $user['id'];
+
+        $sql = "DELETE FROM carts WHERE user_id = ?";
+        $stmt = $this->query($sql, [$userId]);
+        return $stmt !== false;
+    }
+    public function getUserCart(int $chatId): array
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) return [];
+        $userId = $user['id'];
+
+        $sql = "
+        SELECT 
+            c.id as cart_item_id, 
+            p.id as product_id, 
+            p.name as product_name, 
+            c.quantity,
+            v.id as variant_id,
+            v.variant_name,
+            COALESCE(v.price, p.price) as price,
+            pi.file_id as image_file_id
+        FROM carts c
+        JOIN users u ON c.user_id = u.id
+        JOIN products p ON c.product_id = p.id
+        LEFT JOIN product_variants v ON c.variant_id = v.id
+        LEFT JOIN (
+            SELECT product_id, file_id FROM product_images ORDER BY sort_order
+        ) as pi ON p.id = pi.product_id
+        WHERE u.chat_id = ?
+        GROUP BY c.id
+    ";
+        $stmt = $this->query($sql, [$chatId]);
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+    public function addToCart(int $chatId, int $productId, ?int $variantId = null, int $quantity = 1): bool
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) return false;
+        $userId = $user['id'];
+
+        $sql = "
+        INSERT INTO carts (user_id, product_id, variant_id, quantity) 
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE quantity = quantity + VALUES(quantity)
+        ";
+        $stmt = $this->query($sql, [$userId, $productId, $variantId, $quantity]);
+        return $stmt !== false;
+    }
+
+    public function updateCartQuantity(int $cartItemId, int $newQuantity): bool
+    {
+        if ($newQuantity <= 0) {
+            return $this->removeFromCart($cartItemId);
+        }
+        $sql = "UPDATE carts SET quantity = ? WHERE id = ?";
+        $stmt = $this->query($sql, [$newQuantity, $cartItemId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
+
+    public function removeFromCart(int $cartItemId): bool
+    {
+        $sql = "DELETE FROM carts WHERE id = ?";
+        $stmt = $this->query($sql, [$cartItemId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
+    public function removeProductFromCart(int $chatId, int $productId): bool
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) {
+            return false; 
+        }
+        $userId = $user['id'];
+        $sql = "DELETE FROM carts WHERE user_id = ? AND product_id = ?";
+        $stmt = $this->query($sql, [$userId, $productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
+    public function getCartItemQuantity(int $chatId, int $productId, ?int $variantId = null): int
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) return 0;
+        $userId = $user['id'];
+
+        if ($variantId === null) {
+            $sql = "SELECT SUM(quantity) FROM carts WHERE user_id = ? AND product_id = ?";
+            $params = [$userId, $productId];
+        } else {
+            $sql = "SELECT quantity FROM carts WHERE user_id = ? AND product_id = ? AND variant_id = ?";
+            $params = [$userId, $productId, $variantId];
+        }
+
+        $stmt = $this->query($sql, $params);
+        return $stmt ? (int)$stmt->fetchColumn() : 0;
+    }
+
+    public function updateCartQuantityByProduct(int $chatId, int $productId, int $newQuantity, ?int $variantId = null): bool
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user) return false;
+        $userId = $user['id'];
+
+        if ($newQuantity <= 0) {
+            $sql = "DELETE FROM carts WHERE user_id = ? AND product_id = ?";
+            $params = [$userId, $productId];
+            if ($variantId !== null) {
+                $sql .= " AND variant_id = ?";
+                $params[] = $variantId;
+            } else {
+                $sql .= " AND variant_id IS NULL";
+            }
+        } else {
+            $sql = "UPDATE carts SET quantity = ? WHERE user_id = ? AND product_id = ?";
+            $params = [$newQuantity, $userId, $productId];
+            if ($variantId !== null) {
+                $sql .= " AND variant_id = ?";
+                $params[] = $variantId;
+            } else {
+                $sql .= " AND variant_id IS NULL";
+            }
+        }
+
+        $stmt = $this->query($sql, $params);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
     //    -------------------------------- invoices
-   
+
+
+
     public function createNewInvoice(int $chatId, array $cartItems, float $totalAmount, array $shippingInfo): int|false
     {
         $user = $this->getUserByChatIdOrUsername($chatId);
@@ -420,23 +554,85 @@ class Database
     }
 
     //    -------------------------------- products
-   
+
     public function createNewProduct(array $productData): int|false
     {
-        $sql = "INSERT INTO products (category_id, name, description, stock, price, image_file_id) 
-        VALUES (:category_id, :name, :description, :stock, :price, :image_file_id)";
+        // پارامترهای اصلی محصول را آماده می‌کنیم
+        $productSql = "INSERT INTO products (category_id, name, description, price, stock) 
+                   VALUES (:category_id, :name, :description, :price, :stock)";
 
-        $params = [
-            ':category_id'   => $productData['category_id'] ?? null,
-            ':name'          => $productData['name'] ?? 'بدون نام',
-            ':description'   => $productData['description'] ?? '',
-            ':stock'         => $productData['stock'] ?? 0, 
-            ':price'         => $productData['price'] ?? 0,
-            ':image_file_id' => $productData['image_file_id'] ?? null
+        $productParams = [
+            ':category_id'   => $productData['category_id'],
+            ':name'          => $productData['name'],
+            ':description'   => $productData['description'],
+            ':price'         => $productData['price'],
+            ':stock'         => $productData['stock']
         ];
 
-        $stmt = $this->query($sql, $params);
-        return $stmt ? $this->pdo->lastInsertId() : false;
+        try {
+            $this->pdo->beginTransaction();
+
+            // 1. محصول اصلی را ثبت می‌کنیم
+            $this->query($productSql, $productParams);
+            $productId = (int)$this->pdo->lastInsertId();
+
+            // 2. تصاویر محصول را ثبت می‌کنیم (اگر وجود داشت)
+            if (!empty($productData['images'])) {
+                $imageSql = "INSERT INTO product_images (product_id, file_id, sort_order) VALUES (?, ?, ?)";
+                $imageStmt = $this->pdo->prepare($imageSql);
+                foreach ($productData['images'] as $index => $fileId) {
+                    $imageStmt->execute([$productId, $fileId, $index]);
+                }
+            }
+
+            if (!empty($productData['variants'])) {
+                $variantSql = "INSERT INTO product_variants (product_id, variant_name, price, stock) VALUES (?, ?, ?, ?)";
+                $variantStmt = $this->pdo->prepare($variantSql);
+                foreach ($productData['variants'] as $variant) {
+                    $variantStmt->execute([
+                        $productId,
+                        $variant['name'],
+                        $variant['price'],
+                        $variant['stock']
+                    ]);
+                }
+            }
+
+            $this->pdo->commit();
+            return $productId;
+        } catch (\Exception $e) {
+            $this->pdo->rollBack();
+            error_log("Product creation failed: " . $e->getMessage());
+            return false;
+        }
+    }
+    public function getProductById(int $productId): array|false
+    {
+        $stmt = $this->query("SELECT * FROM products WHERE id = ? LIMIT 1", [$productId]);
+        $product = $stmt ? $stmt->fetch() : false;
+
+        if ($product) {
+            $imagesStmt = $this->query("SELECT file_id FROM product_images WHERE product_id = ? ORDER BY sort_order ASC", [$productId]);
+            $product['images'] = $imagesStmt ? $imagesStmt->fetchAll(PDO::FETCH_COLUMN) : [];
+
+            $variantsStmt = $this->query("SELECT * FROM product_variants WHERE product_id = ? AND is_active = 1 ORDER BY price ASC", [$productId]);
+            $product['variants'] = $variantsStmt ? $variantsStmt->fetchAll() : [];
+        }
+
+        return $product;
+    }
+
+    public function updateChannelMessageId(int $productId, int $messageId): bool
+    {
+        $sql = "UPDATE products SET channel_message_id = ? WHERE id = ?";
+        $stmt = $this->query($sql, [$messageId, $productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+    public function getProductVariants(int $productId): array
+    {
+        $sql = "SELECT * FROM product_variants WHERE product_id = ? AND is_active = 1 ORDER BY price ASC";
+        $stmt = $this->query($sql, [$productId]);
+        return $stmt ? $stmt->fetchAll() : [];
     }
     public function getActiveProductsByCategoryId(int $categoryId): array
     {
@@ -450,11 +646,7 @@ class Database
         return $stmt ? $stmt->fetchAll() : [];
     }
 
-    public function getProductById(int $productId): array|false
-    {
-        $stmt = $this->query("SELECT * FROM products WHERE id = ? LIMIT 1", [$productId]);
-        return $stmt ? $stmt->fetch() : false;
-    }
+
     public function getProductsByIds(array $productIds): array
     {
         if (empty($productIds)) {
@@ -466,7 +658,7 @@ class Database
         return $stmt ? $stmt->fetchAll() : [];
     }
 
-    
+
     public function updateProductStock(int $productId, int $newStock): bool
     {
         $stmt = $this->query("UPDATE products SET stock = ? WHERE id = ?", [$newStock, $productId]);
@@ -480,7 +672,7 @@ class Database
     }
     //    -------------------------------- settings
 
-    
+
     public function getSettingValue(string $key): ?string
     {
         $stmt = $this->query("SELECT value FROM settings WHERE `key` = ? LIMIT 1", [$key]);
@@ -506,33 +698,271 @@ class Database
 
 
 
-    //    -------------------------------- categories
+    //    -------------------------------- categoryes
 
 
-    public function createNewCategory(string $categoryName): int|false
+    public function createNewCategory(string $categoryName, ?int $parentId = null): int|false
     {
-        $stmt = $this->query("INSERT INTO categories (name) VALUES (?)", [$categoryName]);
-        return $stmt ? $this->pdo->lastInsertId() : false;
+        try {
+            $stmt = $this->query("INSERT INTO categories (name, parent_id) VALUES (?, ?)", [$categoryName, $parentId]);
+            return $stmt ? (int)$this->pdo->lastInsertId() : false;
+        } catch (PDOException $e) {
+            if (str_contains($e->getMessage(), 'SQLSTATE[45000]')) {
+                error_log("❌ Trigger Error in createNewCategory: " . $e->getMessage());
+                return false;
+            }
+            throw $e;
+        }
     }
     public function updateCategoryName(int $categoryId, string $newName): bool
     {
         $stmt = $this->query("UPDATE categories SET name = ? WHERE id = ?", [$newName, $categoryId]);
         return $stmt && $stmt->rowCount() > 0;
     }
-    
+
     public function getCategoryById(int $categoryId): array|false
     {
         $stmt = $this->query("SELECT * FROM categories WHERE id = ? LIMIT 1", [$categoryId]);
         return $stmt ? $stmt->fetch() : false;
     }
-    public function deleteCategoryById(int $categoryId): bool
+    public function deleteCategoryById(int $categoryId): bool|string
     {
-        $stmt = $this->query("DELETE FROM categories WHERE id = ?", [$categoryId]);
-        return $stmt && $stmt->rowCount() > 0;
+        try {
+            $stmt = $this->query("DELETE FROM categories WHERE id = ?", [$categoryId]);
+            return $stmt && $stmt->rowCount() > 0;
+        } catch (PDOException $e) {
+            if ($e->getCode() === '23000') {
+                return 'has_products';
+            }
+            error_log("❌ SQL Query Failed in deleteCategoryById: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    public function moveCategory(int $categoryId, string $direction): bool
+    {
+        // ابتدا والد دسته‌بندی مورد نظر را پیدا می‌کنیم
+        $stmt = $this->query("SELECT parent_id FROM categories WHERE id = ? LIMIT 1", [$categoryId]);
+        $category = $stmt ? $stmt->fetch() : false;
+        if (!$category) {
+            return false; // دسته‌بندی وجود ندارد
+        }
+        $parentId = $category['parent_id'];
+
+        // تمام هم‌سطح‌ها (فرزندان یک والد) را به ترتیب فعلی دریافت می‌کنیم
+        $siblingsStmt = $this->query("SELECT id FROM categories WHERE parent_id <=> ? ORDER BY sort_order ASC, id ASC", [$parentId]);
+        $siblings = $siblingsStmt ? $siblingsStmt->fetchAll(PDO::FETCH_COLUMN) : [];
+
+        // جایگاه فعلی دسته‌بندی را در لیست پیدا می‌کنیم
+        $currentIndex = array_search($categoryId, $siblings);
+        if ($currentIndex === false) {
+            return false; // خطای غیرمنتظره
+        }
+
+        // بر اساس جهت، جایگاه جدید را مشخص می‌کنیم
+        if ($direction === 'up' && $currentIndex > 0) {
+            $newIndex = $currentIndex - 1;
+            // جابجایی در آرایه
+            $temp = $siblings[$newIndex];
+            $siblings[$newIndex] = $siblings[$currentIndex];
+            $siblings[$currentIndex] = $temp;
+        } elseif ($direction === 'down' && $currentIndex < count($siblings) - 1) {
+            $newIndex = $currentIndex + 1;
+            $temp = $siblings[$newIndex];
+            $siblings[$newIndex] = $siblings[$currentIndex];
+            $siblings[$currentIndex] = $temp;
+        } else {
+            return false;
+        }
+
+        try {
+            $this->pdo->beginTransaction();
+            $sql = "UPDATE categories SET sort_order = ? WHERE id = ?";
+            $stmt = $this->pdo->prepare($sql);
+            foreach ($siblings as $index => $id) {
+                $stmt->execute([$index, $id]);
+            }
+            $this->pdo->commit();
+            return true;
+        } catch (PDOException $e) {
+            $this->pdo->rollBack();
+            error_log("Failed to reorder categories: " . $e->getMessage());
+            return false;
+        }
+    }
+    public function getCategorySiblings(int $categoryId): array
+    {
+        $stmt = $this->query("SELECT parent_id FROM categories WHERE id = ? LIMIT 1", [$categoryId]);
+        $category = $stmt ? $stmt->fetch() : false;
+
+        if ($category === false) {
+            return [];
+        }
+
+        $parentId = $category['parent_id'];
+        $sql = "SELECT id, name, sort_order FROM categories WHERE parent_id <=> ? ORDER BY sort_order ASC, id ASC";
+        $stmt = $this->query($sql, [$parentId]);
+
+        return $stmt ? $stmt->fetchAll() : [];
     }
     public function getAllCategories(): array
     {
-        $stmt = $this->query("SELECT * FROM categories ORDER BY id ASC");
+        $stmt = $this->query("SELECT * FROM categories ORDER BY parent_id, sort_order, name");
+        $categories = $stmt ? $stmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+        $nestedCategories = [];
+        $categoryMap = [];
+
+        // First, create a map of categories by their ID for easy lookup.
+        foreach ($categories as $category) {
+            $categoryMap[$category['id']] = array_merge($category, ['children' => []]);
+        }
+
+        foreach ($categoryMap as $id => &$category) {
+            if ($category['parent_id'] !== null && isset($categoryMap[$category['parent_id']])) {
+                $categoryMap[$category['parent_id']]['children'][] = &$category;
+            } else {
+                $nestedCategories[] = &$category;
+            }
+        }
+
+        return $nestedCategories;
+    }
+    public function getSubcategories(int $parentId): array
+    {
+        $stmt = $this->query("SELECT * FROM categories WHERE parent_id = ? ORDER BY sort_order, name", [$parentId]);
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+    public function getRootCategories(): array
+    {
+        $stmt = $this->query("SELECT * FROM categories WHERE parent_id IS NULL ORDER BY sort_order, name");
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+    public function getCategoriesWithoutChildren(): array
+    {
+        $sql = "
+            SELECT c.* FROM categories c
+            LEFT JOIN categories sub ON c.id = sub.parent_id
+            WHERE sub.id IS NULL
+            ORDER BY c.name ASC
+        ";
+        $stmt = $this->query($sql);
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+
+    public function getCategoryDepth(int $categoryId): int
+    {
+        $depth = 0;
+        $currentId = $categoryId;
+
+        while ($currentId !== null) {
+            $stmt = $this->query("SELECT parent_id FROM categories WHERE id = ? LIMIT 1", [$currentId]);
+            $result = $stmt ? $stmt->fetch() : false;
+            if ($result && $result['parent_id'] !== null) {
+                $currentId = $result['parent_id'];
+                $depth++;
+            } else {
+                $currentId = null;
+            }
+        }
+        return $depth;
+    }
+    public function getCategoriesWithNoProducts(): array
+    {
+        $sql = "
+            SELECT c.* FROM categories c
+            WHERE NOT EXISTS (SELECT 1 FROM products p WHERE p.category_id = c.id)
+            ORDER BY c.parent_id, c.sort_order, c.name
+        ";
+        $stmt = $this->query($sql);
+        $categories = $stmt ? $stmt->fetchAll() : [];
+
+        $nestedCategories = [];
+        $categoryMap = [];
+
+        foreach ($categories as $category) {
+            $categoryMap[$category['id']] = array_merge($category, ['children' => []]);
+        }
+
+        foreach ($categoryMap as $id => &$category) {
+            if ($category['parent_id'] !== null && isset($categoryMap[$category['parent_id']])) {
+                $categoryMap[$category['parent_id']]['children'][] = &$category;
+            } else {
+                $nestedCategories[] = &$category;
+            }
+        }
+        unset($category);
+
+        return $nestedCategories;
+    }
+    public function getCategoryPath(int $categoryId): string
+    {
+        $path = [];
+        $currentId = $categoryId;
+
+        while ($currentId !== null) {
+            $stmt = $this->query("SELECT id, name, parent_id FROM categories WHERE id = ? LIMIT 1", [$currentId]);
+            $category = $stmt ? $stmt->fetch() : false;
+            if ($category) {
+                array_unshift($path, htmlspecialchars($category['name']));
+                $currentId = $category['parent_id'];
+            } else {
+                $currentId = null;
+            }
+        }
+        return implode(' > ', $path);
+    }
+    public function getCategoryContentSummary(int $categoryId): array
+    {
+        $product_stmt = $this->query("SELECT COUNT(*) FROM products WHERE category_id = ?", [$categoryId]);
+        $product_count = $product_stmt ? (int)$product_stmt->fetchColumn() : 0;
+
+        $subcategory_stmt = $this->query("SELECT COUNT(*) FROM categories WHERE parent_id = ?", [$categoryId]);
+        $subcategory_count = $subcategory_stmt ? (int)$subcategory_stmt->fetchColumn() : 0;
+
+        return [
+            'products' => $product_count,
+            'subcategories' => $subcategory_count,
+        ];
+    }
+    public function updateCategoryStatus(int $categoryId, bool $isActive): bool
+    {
+        $stmt = $this->query("UPDATE categories SET is_active = ? WHERE id = ?", [$isActive, $categoryId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
+    public function updateCategoryParent(int $categoryId, ?int $newParentId): bool|string
+    {
+        $currentId = $newParentId;
+        while ($currentId !== null) {
+            if ($currentId == $categoryId) {
+                return 'circular_dependency'; // Error code for circular dependency
+            }
+            $stmt = $this->query("SELECT parent_id FROM categories WHERE id = ? LIMIT 1", [$currentId]);
+            $parent = $stmt ? $stmt->fetch() : false;
+            $currentId = $parent ? $parent['parent_id'] : null;
+        }
+
+        try {
+            $stmt = $this->query("UPDATE categories SET parent_id = ? WHERE id = ?", [$newParentId, $categoryId]);
+            return $stmt && $stmt->rowCount() > 0;
+        } catch (PDOException $e) {
+            if (str_contains($e->getMessage(), 'SQLSTATE[45000]')) {
+                return 'has_products';
+            }
+            throw $e;
+        }
+    }
+
+    public function getActiveRootCategories(): array
+    {
+        $stmt = $this->query("SELECT * FROM categories WHERE parent_id IS NULL AND is_active = 1 ORDER BY sort_order, name");
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+
+    public function getActiveSubcategories(int $parentId): array
+    {
+        $stmt = $this->query("SELECT * FROM categories WHERE parent_id = ? AND is_active = 1 ORDER BY sort_order, name", [$parentId]);
         return $stmt ? $stmt->fetchAll() : [];
     }
 }
