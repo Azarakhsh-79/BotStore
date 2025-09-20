@@ -1,19 +1,50 @@
 <?php
-require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/../../bootstrap.php';
+
+use Config\AppConfig;
+use Bot\BotHandler;
+use Bot\SuperAdminManager;
+
+$botId = $_GET['bot_id'] ?? null;
+
+if (!$botId) {
+    http_response_code(400); // Bad Request
+    error_log("⚠️ Bot ID is missing from the request URL.");
+    exit('Bot ID is required.');
+}
+
+try {
+    $adminManager = new SuperAdminManager();
+    if (!$adminManager->isBotAllowedToRun($botId)) {
+        http_response_code(200);
+        error_log("🚫 IGNORED: Request for inactive/expired bot '{$botId}'.");
+        exit('Bot is not active.');
+    }
+} catch (\Exception $e) {
+    http_response_code(500);
+    error_log("❌ Failed to check bot status for '{$botId}': " . $e->getMessage());
+    exit('Could not verify bot status.');
+}
+
+try {
+    AppConfig::init($botId);
+} catch (\Exception $e) {
+    http_response_code(500); // Internal Server Error
+    error_log("❌ Failed to initialize AppConfig for bot '{$botId}': " . $e->getMessage());
+    exit('Configuration failed.');
+}
+
 date_default_timezone_set('Asia/Tehran');
 
-use Bot\BotHandler;
-
 $update = json_decode(file_get_contents('php://input'), true);
-// error_log("Update: " . print_r($update ,true));
+
 if (!$update) {
     exit('No update received');
 }
 
 switch (true) {
     case isset($update['inline_query']):
-    
-        $inlineQueryHandler->handleInlineQuery($update['inline_query']);
+        // TODO: Logic for inline query
         break;
 
     case isset($update['message']):
@@ -41,7 +72,10 @@ switch (true) {
         break;
 
     case isset($update['pre_checkout_query']):
-       
+        $preCheckoutQuery = $update['pre_checkout_query'];
+        $chatId = $preCheckoutQuery['from']['id'] ?? null;
+
+        $bot = new BotHandler($chatId, '', null, null);
         $bot->handlePreCheckoutQuery($update);
         break;
 

@@ -15,6 +15,12 @@ class Database
     public function __construct()
     {
         $config = AppConfig::get();
+
+        // Add a check to ensure config is loaded
+        if (empty($config)) {
+            throw new PDOException("Database configuration is not loaded. AppConfig might not be initialized for the current bot.");
+        }
+
         $this->botLink = $config['bot']['bot_link'];
         $dbConfig = $config['database'];
 
@@ -29,7 +35,7 @@ class Database
             $this->pdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], $options);
         } catch (PDOException $e) {
             error_log("❌ Database Connection Failed: " . $e->getMessage());
-            exit();
+            throw $e;
         }
     }
 
@@ -52,14 +58,15 @@ class Database
     public function saveUser($user, $entryToken = null): void
     {
         $sql = "
-        INSERT INTO users (chat_id, username, first_name, last_name, language, entry_token) 
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON DUPLICATE KEY UPDATE 
-            username = VALUES(username), 
-            first_name = VALUES(first_name), 
-            last_name = VALUES(last_name), 
-            language = VALUES(language)
-    ";
+    INSERT INTO users (chat_id, username, first_name, last_name, language, entry_token, updated_at) 
+    VALUES (?, ?, ?, ?, ?, ?, NOW())
+    ON DUPLICATE KEY UPDATE 
+        username = VALUES(username), 
+        first_name = VALUES(first_name), 
+        last_name = VALUES(last_name), 
+        language = VALUES(language),
+        updated_at = NOW()
+";
 
         $params = [
             $user['id'],
@@ -250,18 +257,36 @@ class Database
         return $stmt ? $stmt->fetchAll() : [];
     }
 
+   
+
     public function getStatsSummary(): array
     {
-        $todayStart = date('Y-m-d 00:00:00');
-        $lowStockThreshold = 5; // آستانه موجودی کم را ۵ در نظر می‌گیریم
+        // بازه‌های زمانی
+        $today_start = date('Y-m-d 00:00:00');
+        $yesterday_start = date('Y-m-d 00:00:00', strtotime('-1 day'));
+        $last_7_days_start = date('Y-m-d 00:00:00', strtotime('-6 days'));
+        $low_stock_threshold = 5;
 
         $queries = [
+            // آمار کلی
             'total_users' => "SELECT COUNT(id) FROM users",
-            'new_users_today' => "SELECT COUNT(id) FROM users WHERE created_at >= '{$todayStart}'",
             'total_products' => "SELECT COUNT(id) FROM products",
-            'low_stock_products' => "SELECT COUNT(id) FROM products WHERE stock > 0 AND stock < {$lowStockThreshold}",
+            'low_stock_products' => "SELECT COUNT(id) FROM products WHERE stock > 0 AND stock < {$low_stock_threshold}",
             'pending_invoices' => "SELECT COUNT(id) FROM invoices WHERE status = 'pending'",
-            'todays_revenue' => "SELECT SUM(total_amount) FROM invoices WHERE status = 'paid' AND updated_at >= '{$todayStart}'"
+
+            // آمار کاربران
+            'new_users_today' => "SELECT COUNT(id) FROM users WHERE created_at >= '{$today_start}'",
+            'new_users_yesterday' => "SELECT COUNT(id) FROM users WHERE created_at >= '{$yesterday_start}' AND created_at < '{$today_start}'",
+            'new_users_last_7_days' => "SELECT COUNT(id) FROM users WHERE created_at >= '{$last_7_days_start}'",
+            'active_users_today' => "SELECT COUNT(id) FROM users WHERE updated_at >= '{$today_start}'",
+            'active_users_last_7_days' => "SELECT COUNT(id) FROM users WHERE updated_at >= '{$last_7_days_start}'",
+
+            // آمار تعاملات (بازدیدها) - با فرض اینکه هر آپدیت یک تعامل است
+            'total_interactions_today' => "SELECT COUNT(id) FROM users WHERE updated_at >= '{$today_start}'",
+            'total_interactions_yesterday' => "SELECT COUNT(id) FROM users WHERE updated_at >= '{$yesterday_start}' AND updated_at < '{$today_start}'",
+
+            // آمار مالی
+            'todays_revenue' => "SELECT SUM(total_amount) FROM invoices WHERE status = 'paid' AND updated_at >= '{$today_start}'",
         ];
 
         $stats = [];
@@ -270,17 +295,55 @@ class Database
             $stats[$key] = $stmt ? ($stmt->fetchColumn() ?? 0) : 0;
         }
 
-        return [
-            'total_users' => (int)$stats['total_users'],
-            'new_users_today' => (int)$stats['new_users_today'],
-            'total_products' => (int)$stats['total_products'],
-            'low_stock_products' => (int)$stats['low_stock_products'],
-            'pending_invoices' => (int)$stats['pending_invoices'],
-            'todays_revenue' => (float)$stats['todays_revenue'],
-        ];
+        $stats['new_users_change_percent'] = $stats['new_users_yesterday'] > 0
+            ? round((($stats['new_users_today'] - $stats['new_users_yesterday']) / $stats['new_users_yesterday']) * 100)
+            : ($stats['new_users_today'] > 0 ? 100 : 0);
+
+        $stats['interactions_change_percent'] = $stats['total_interactions_yesterday'] > 0
+            ? round((($stats['total_interactions_today'] - $stats['total_interactions_yesterday']) / $stats['total_interactions_yesterday']) * 100)
+            : ($stats['total_interactions_today'] > 0 ? 100 : 0);
+
+        return array_map(function ($value) {
+            return is_numeric($value) ? (float)$value : $value;
+        }, $stats);
+    }
+
+    public function createAdminToken(int $chatId): ?string
+    {
+        $user = $this->getUserByChatIdOrUsername($chatId);
+        if (!$user || !$user['is_admin']) {
+            return null;
+        }
+
+        $token = bin2hex(random_bytes(32));
+        $expiresAt = date('Y-m-d H:i:s', time() + 300); // 5 دقیقه اعتبار
+
+        $sql = "INSERT INTO admin_tokens (user_id, token, expires_at) VALUES (?, ?, ?)";
+        $stmt = $this->query($sql, [$user['id'], $token, $expiresAt]);
+
+        return $stmt ? $token : null;
     }
 
 
+    public function validateAdminToken(string $token): array|false
+    {
+        $sql = "
+        SELECT u.id, u.chat_id, u.is_admin
+        FROM admin_tokens at
+        JOIN users u ON at.user_id = u.id
+        WHERE at.token = ? AND at.is_used = FALSE AND at.expires_at > NOW()
+        LIMIT 1
+    ";
+        $stmt = $this->query($sql, [$token]);
+        $user = $stmt ? $stmt->fetch() : false;
+
+        if ($user) {
+            $this->query("UPDATE admin_tokens SET is_used = TRUE WHERE token = ?", [$token]);
+            return $user;
+        }
+
+        return false;
+    }
     //    -------------------------------- cart
 
 
@@ -606,7 +669,59 @@ class Database
             return false;
         }
     }
-    public function getProductById(int $productId): array|false
+    
+    public function getActiveDiscountedProducts(): array
+    {
+        $sql = "SELECT * FROM products 
+                WHERE is_active = 1 
+                AND discount_price IS NOT NULL 
+                AND discount_price > 0 
+                ORDER BY updated_at DESC";
+        $stmt = $this->query($sql);
+        return $stmt ? $stmt->fetchAll() : [];
+    }
+    public function updateProductDiscount(int $productId, ?float $discountPrice): bool
+    {
+        $sql = "UPDATE products SET discount_price = ? WHERE id = ?";
+        $stmt = $this->query($sql, [$discountPrice, $productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+    public function getStockForCartIdentifier(int $chatId, int $productId, string $identifier): int
+    {
+        $product = $this->getProductById($productId);
+        if (!$product) return 0;
+
+        $variantId = null;
+        if (str_starts_with($identifier, 'new_')) {
+            $variantId = (int)str_replace('new_', '', $identifier);
+        } else {
+            $userCart = $this->getUserCart($chatId);
+            foreach ($userCart as $item) {
+                if ($item['cart_item_id'] == $identifier) {
+                    $variantId = $item['variant_id']; // می‌تواند null باشد
+                    break;
+                }
+            }
+        }
+
+        if ($variantId === null) { // محصول ساده
+            return (int)$product['stock'];
+        } else { // محصول دارای ویژگی
+            foreach ($product['variants'] as $v) {
+                if ($v['id'] == $variantId) {
+                    return (int)$v['stock'];
+                }
+            }
+        }
+        return 0;
+    }
+    public function getProductIdByVariantId(int $variantId): ?int
+    {
+        $stmt = $this->query("SELECT product_id FROM product_variants WHERE id = ? LIMIT 1", [$variantId]);
+        $result = $stmt ? $stmt->fetchColumn() : null;
+        return $result ? (int)$result : null;
+    }
+        public function getProductById(int $productId): array|false
     {
         $stmt = $this->query("SELECT * FROM products WHERE id = ? LIMIT 1", [$productId]);
         $product = $stmt ? $stmt->fetch() : false;
@@ -642,10 +757,53 @@ class Database
 
     public function getProductsByCategoryId(int $categoryId): array
     {
-        $stmt = $this->query("SELECT * FROM products WHERE category_id = ?", [$categoryId]);
+        $sql = "
+            SELECT p.*, (
+                SELECT pi.file_id 
+                FROM product_images pi 
+                WHERE pi.product_id = p.id 
+                ORDER BY pi.sort_order ASC 
+                LIMIT 1
+            ) AS image_file_id
+            FROM products p
+            WHERE p.category_id = ?
+        ";
+        $stmt = $this->query($sql, [$categoryId]);
         return $stmt ? $stmt->fetchAll() : [];
     }
+    public function updateProductName(int $productId, string $newName): bool
+    {
+        $stmt = $this->query("UPDATE products SET name = ? WHERE id = ?", [$newName, $productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
 
+    public function updateProductDescription(int $productId, string $newDescription): bool
+    {
+        $stmt = $this->query("UPDATE products SET description = ? WHERE id = ?", [$newDescription, $productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
+    public function updateProductPrice(int $productId, float $newPrice): bool
+    {
+        $stmt = $this->query("UPDATE products SET price = ? WHERE id = ?", [$newPrice, $productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
+
+    public function updateProductImage(int $productId, string $fileId): bool
+    {
+        // برای سادگی، ابتدا تمام عکس‌های قبلی محصول را حذف می‌کنیم
+        $this->query("DELETE FROM product_images WHERE product_id = ?", [$productId]);
+        // سپس عکس جدید را اضافه می‌کنیم
+        $sql = "INSERT INTO product_images (product_id, file_id, sort_order) VALUES (?, ?, 0)";
+        $stmt = $this->query($sql, [$productId, $fileId]);
+        return (bool)$stmt;
+    }
+
+    public function removeProductImage(int $productId): bool
+    {
+        $stmt = $this->query("DELETE FROM product_images WHERE product_id = ?", [$productId]);
+        return $stmt && $stmt->rowCount() > 0;
+    }
 
     public function getProductsByIds(array $productIds): array
     {

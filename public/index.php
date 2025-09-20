@@ -2,15 +2,52 @@
 // فایل autoload برای استفاده از کتابخانه‌ها
 require_once __DIR__ . '/../vendor/autoload.php';
 
-// استفاده از AppConfig برای خواندن تنظیمات
-use Config\AppConfig;
+function get_bot_info(string $filePath): ?array
+{
+    $content = file_get_contents($filePath);
+    if ($content === false) {
+        return null;
+    }
 
-// بارگذاری تنظیمات از فایل .env
-AppConfig::get();
+    $bot_link = '#';
+    $store_name = basename($filePath, '.env'); // Fallback name
+    $bot_logo = "../assets/images/default.jpg"; // پیش‌فرض
 
-// خواندن مقادیر مورد نیاز از تنظیمات
-$bot_link   = AppConfig::get('bot.bot_link', '#');
-$store_name = AppConfig::get('bot.store_name', 'فروشگاه تلگرامی ما');
+    if (preg_match('/^BOT_LINK=(.*)$/m', $content, $matches)) {
+        $bot_link = trim($matches[1]);
+    }
+    if (preg_match('/^STORE_NAME=(.*)$/m', $content, $matches)) {
+        $store_name = trim($matches[1]);
+    } elseif (preg_match('/^BOT_NAME=(.*)$/m', $content, $matches)) {
+        $store_name = trim($matches[1]);
+    }
+    if (preg_match('/^BOT_LOGO=(.*)$/m', $content, $matches)) {
+        $bot_logo = trim($matches[1]);
+    }
+
+    return [
+        'link' => $bot_link,
+        'name' => $store_name,
+        'logo' => $bot_logo,
+    ];
+}
+
+$bots = [];
+$configPath = __DIR__ . '/../config/';
+$envFiles = glob($configPath . '*.env');
+
+// master.env shouldn't be listed as a bot
+$masterEnvFile = $configPath . 'master.env';
+if (($key = array_search($masterEnvFile, $envFiles)) !== false) {
+    unset($envFiles[$key]);
+}
+
+foreach ($envFiles as $file) {
+    $info = get_bot_info($file);
+    if ($info) {
+        $bots[] = $info;
+    }
+}
 ?>
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -18,86 +55,72 @@ $store_name = AppConfig::get('bot.store_name', 'فروشگاه تلگرامی م
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>معرفی ربات فروشگاهی</title>
+    <title>لیست ربات‌های فروشگاهی</title>
     <style>
-        /* 🌙 دارک مدرن */
         body {
             background: #0d1117;
             font-family: 'Vazirmatn', sans-serif;
             margin: 0;
-            padding: 0;
+            padding: 20px;
             color: #e6edf3;
         }
 
         .container {
-            max-width: 900px;
+            max-width: 1000px;
             margin: 50px auto;
+        }
+
+        h1 {
+            font-size: 2.6em;
+            margin-bottom: 30px;
+            text-align: center;
+            color: #f0f6fc;
+        }
+
+        .bot-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 30px;
+        }
+
+        .bot-card {
             background: #161b22;
             border-radius: 16px;
             box-shadow: 0 10px 35px rgba(0, 0, 0, 0.6);
-            padding: 50px 40px;
+            padding: 30px 20px;
             text-align: center;
             position: relative;
             overflow: hidden;
         }
 
-        .container::before {
-            content: "";
-            position: absolute;
-            top: -100px;
-            left: -100px;
-            width: 250px;
-            height: 250px;
-            background: radial-gradient(circle, rgba(0, 123, 255, 0.15), transparent 70%);
-            border-radius: 50%;
-            z-index: 0;
-        }
-
-        .container::after {
-            content: "";
-            position: absolute;
-            bottom: -120px;
-            right: -120px;
-            width: 300px;
-            height: 300px;
-            background: radial-gradient(circle, rgba(255, 0, 123, 0.1), transparent 70%);
-            border-radius: 50%;
-            z-index: 0;
-        }
-
-        .container>* {
-            position: relative;
-            z-index: 1;
-        }
-
-        .logo {
-            width: 140px;
-            height: 140px;
+        .bot-card img {
+            width: 120px;
+            height: 120px;
             border-radius: 50%;
             object-fit: cover;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
             border: 4px solid #222;
             box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
         }
 
-        h1 {
-            font-size: 2.6em;
+        .bot-card h2 {
+            font-size: 1.8em;
             margin-bottom: 10px;
             color: #f0f6fc;
         }
 
-        .lead {
-            font-size: 1.2em;
+        .bot-card p {
+            font-size: 1em;
             color: #9ca3af;
-            margin-bottom: 25px;
+            margin-bottom: 20px;
         }
 
         .btn-primary {
             display: inline-block;
             background: linear-gradient(45deg, #007bff, #0056b3);
             color: #fff;
-            padding: 14px 36px;
-            font-size: 1.1em;
+            padding: 12px 30px;
+            font-size: 1em;
             text-decoration: none;
             border-radius: 12px;
             transition: all 0.3s ease;
@@ -109,49 +132,39 @@ $store_name = AppConfig::get('bot.store_name', 'فروشگاه تلگرامی م
             transform: translateY(-3px);
         }
 
-        .features {
-            text-align: right;
-            margin: 50px 0;
-        }
-
-        .features h2 {
-            text-align: center;
-            font-size: 2em;
-            margin-bottom: 30px;
-            color: #c9d1d9;
-        }
-
-        .features ul {
-            list-style: none;
-            padding: 0;
-        }
-
-        .features li {
-            background: #1c2128;
-            margin-bottom: 15px;
-            padding: 18px 20px;
+        .project-about {
+            margin-top: 20px;
+            padding: 30px;
             border-radius: 12px;
-            border-right: 5px solid #007bff;
-            font-size: 1.05em;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            transition: transform 0.2s, box-shadow 0.2s;
+            background: #161b22;
+            color: #e6edf3;
+            line-height: 1.9;
+            text-align: right;
+            box-shadow: 0 6px 25px rgba(0, 0, 0, 0.5);
         }
 
-        .features li:hover {
-            transform: translateX(-6px);
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        .project-about h1,
+        .project-about h3,
+        .project-about h4 {
+            color: #c9d1d9;
+            margin-bottom: 15px;
         }
 
-        .features li strong {
-            color: #f0f6fc;
+        .project-about ul {
+            margin: 10px 0 20px 0;
+            padding-right: 25px;
+        }
+
+        .project-about ul li {
+            margin-bottom: 10px;
+            color: #9ca3af;
         }
 
         .about-me {
-            margin-top: 60px;
+            margin-top: 80px;
             padding-top: 30px;
             border-top: 1px solid #30363d;
+            text-align: center;
         }
 
         .about-me h2 {
@@ -172,28 +185,10 @@ $store_name = AppConfig::get('bot.store_name', 'فروشگاه تلگرامی م
             color: #58a6ff;
             font-weight: bold;
             text-decoration: none;
-            border-bottom: 2px solid transparent;
-            transition: border-color 0.2s;
         }
 
         .about-me a:hover {
-            border-color: #58a6ff;
-        }
-
-        /* 📱 ریسپانسیو */
-        @media (max-width: 600px) {
-            .container {
-                padding: 30px 20px;
-            }
-
-            h1 {
-                font-size: 2em;
-            }
-
-            .features li {
-                font-size: 1em;
-                padding: 14px;
-            }
+            text-decoration: underline;
         }
     </style>
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -204,33 +199,63 @@ $store_name = AppConfig::get('bot.store_name', 'فروشگاه تلگرامی م
 <body>
 
     <div class="container">
-        <img src="../assets/images/baf09e6a160d7d7b9917759c23d34dfb.jpg" alt="لوگوی ربات" class="logo">
-        <h1><?= htmlspecialchars($store_name); ?></h1>
-        <p class="lead">خرید آسان، امن و سریع محصولات فقط با چند کلیک! 🚀</p>
 
-        <a href="<?= htmlspecialchars($bot_link); ?>" target="_blank" class="btn-primary">شروع خرید از ربات</a>
+        <!-- معرفی پروژه -->
+        <div class="project-about">
+            <h1>🤖 درباره این پروژه</h1>
+            <p>
+                این ربات فروشگاهی، یک نمونه کار پیشرفته و جامع است که برای نمایش قدرت و انعطاف‌پذیری ربات‌های تلگرامی در حوزه تجارت الکترونیک، توسط <strong>امیر سلیمانی</strong> طراحی و توسعه داده شده است. این پروژه تنها یک ربات ساده نیست، بلکه یک پلتفرم کامل با معماری چند-رباتی (Multi-Bot) است که امکان مدیریت همزمان چندین فروشگاه را فراهم می‌کند.
+            </p>
 
-        <div class="features">
-            <h2>✨ امکانات ویژه ربات</h2>
+            <h3>✨ برخی از ویژگی‌های برجسته:</h3>
+            <h4>برای کاربران:</h4>
             <ul>
-                <li>🛍 <strong>مدیریت محصولات:</strong> افزودن، ویرایش و حذف محصولات از طریق پنل مدیریت.</li>
-                <li>🛒 <strong>سبد خرید هوشمند:</strong> مدیریت تعداد و خرید یکپارچه.</li>
-                <li>❤️ <strong>لیست علاقه‌مندی‌ها:</strong> ذخیره محصولات برای خریدهای بعدی.</li>
-                <li>💳 <strong>پرداخت امن:</strong> کارت‌به‌کارت و ثبت رسید.</li>
-                <li>📊 <strong>پنل مدیریت:</strong> مدیریت سفارشات و کاربران.</li>
-                <li>🔍 <strong>جستجوی سریع:</strong> Inline Search برای محصولات.</li>
+                <li>🛍 تجربه خرید آسان: مشاهده دسته‌بندی‌ها، محصولات و افزودن به سبد خرید به سادگی.</li>
+                <li>🛒 سبد خرید هوشمند: امکان ویرایش تعداد محصولات و نهایی کردن خرید در هر زمان.</li>
+                <li>❤️ لیست علاقه‌مندی‌ها: ذخیره محصولات مورد علاقه برای دسترسی سریع‌تر در آینده.</li>
+                <li>🔍 جستجوی آنی (Inline): پیدا کردن سریع محصولات در هر صفحه چت.</li>
+                <li>📜 پیگیری سفارشات: مشاهده تاریخچه و وضعیت سفارش‌های ثبت‌شده.</li>
+                <li>📸 پرداخت امن: فرآیند پرداخت از طریق کارت به کارت و ارسال رسید.</li>
+            </ul>
+
+            <h4>برای مدیران:</h4>
+            <ul>
+                <li>⚙️ پنل مدیریت کامل در تلگرام: مدیریت همه‌چیز از جمله محصولات، دسته‌بندی‌ها، سفارش‌ها و تنظیمات فروشگاه بدون نیاز به خروج از تلگرام.</li>
+                <li>📊 داشبورد آمار تحت وب: مشاهده آمار فروش، کاربران جدید و درآمد روزانه در یک پنل وب زیبا و واکنش‌گرا.</li>
+                <li>🔔 اطلاع‌رسانی آنی: دریافت نوتیفیکیشن فوری برای سفارش‌های جدید و رسیدهای پرداخت.</li>
+                <li>🏢 معماری چند-رباتی: قابلیت تعریف و مدیریت چندین ربات فروشگاهی مجزا از طریق یک پنل ادمین مرکزی (Super Admin).</li>
             </ul>
         </div>
 
+        <!-- لیست ربات‌ها -->
+        <h1 style="margin-top:60px;">🤖 لیست ربات‌های فعال</h1>
+
+        <?php if (empty($bots)): ?>
+            <p style="text-align:center;">در حال حاضر ربات فعالی برای نمایش وجود ندارد.</p>
+        <?php else: ?>
+            <div class="bot-list">
+                <?php foreach ($bots as $bot): ?>
+                    <div class="bot-card">
+                        <img src="<?= htmlspecialchars($bot['logo']); ?>" alt="لوگوی ربات">
+                        <h2><?= htmlspecialchars($bot['name']); ?></h2>
+                        <p>خرید آسان، امن و سریع محصولات فقط با چند کلیک! 🚀</p>
+                        <a href="<?= htmlspecialchars($bot['link']); ?>" target="_blank" class="btn-primary">شروع خرید</a>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <!-- درباره توسعه‌دهنده -->
         <div class="about-me">
             <h2>👨‍💻 درباره توسعه‌دهنده</h2>
             <p>
-                این ربات توسط <strong>امیر سلیمانی</strong> به عنوان یک پروژه حرفه‌ای طراحی و توسعه داده شده است.
+                این پروژه توسط <strong>امیر سلیمانی</strong> به عنوان یک نمونه کار حرفه‌ای طراحی و توسعه داده شده است.
                 <br>
                 اگر برای کسب‌وکار خود به یک ربات سفارشی و قدرتمند نیاز دارید، خوشحال می‌شوم با شما همکاری کنم.
             </p>
             <a href="https://t.me/Amir_soleimani_79" target="_blank">ارتباط با من در تلگرام</a>
         </div>
+
     </div>
 
 </body>

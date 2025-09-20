@@ -37,13 +37,21 @@ class FileHandler
     {
         $data = $this->getAllData($fileKey);
         foreach ($values as $key => $value) {
+
+            if ($key === 'edit_cart_state') {
+                $data[$chatId][$key] = $value;
+                continue; 
+            }
+            
+            if ($value === null) {
+                unset($data[$chatId][$key]);
+                continue;
+            }
             if (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && !is_array($value)) {
                 $data[$chatId][$key][] = $value;
-            }
-            elseif (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && is_array($value)) {
-                $data[$chatId][$key] = array_merge($data[$chatId][$key], $value);
-            }
-            else {
+            } elseif (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && is_array($value)) {
+                $data[$chatId][$key] = array_replace($data[$chatId][$key], $value);
+            } else {
                 $data[$chatId][$key] = $value;
             }
         }
@@ -134,7 +142,8 @@ class FileHandler
     private function saveAllData(array $data, $fileKey = null): void
     {
         $file = $this->getFile($fileKey);
-        $jsonData = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+       
+        $jsonData = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_FORCE_OBJECT);
 
         $fp = fopen($file, 'c+');
         if ($fp && flock($fp, LOCK_EX)) {

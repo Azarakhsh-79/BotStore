@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS `products` (
     FULLTEXT INDEX `idx_name_description` (`name`, `description`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+ALTER TABLE `products`
+ADD COLUMN `discount_price` DECIMAL(15, 2) NULL DEFAULT NULL AFTER `price`,
+ADD COLUMN `discount_expires_at` TIMESTAMP NULL DEFAULT NULL AFTER `stock`;
+
+-- اضافه کردن یک ایندکس برای جستجوی سریع‌تر محصولات تخفیف‌دار
+ALTER TABLE `products` ADD INDEX `idx_discount_price` (`discount_price`);
+
+
 -- جدول تصاویر محصول
 CREATE TABLE IF NOT EXISTS `product_images` (
     `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -158,6 +166,20 @@ CREATE TABLE IF NOT EXISTS `invoice_items` (
     INDEX `idx_invoice_id` (`invoice_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Invoice Items';
 
+-- ============================
+--  Admin Access Tokens for Web App
+-- ============================
+
+CREATE TABLE IF NOT EXISTS `admin_tokens` (
+    `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `user_id` INT UNSIGNED NOT NULL,
+    `token` VARCHAR(64) NOT NULL UNIQUE,
+    `is_used` BOOLEAN DEFAULT FALSE,
+    `expires_at` TIMESTAMP NOT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+    INDEX `idx_token` (`token`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='One-time tokens for admin web panel access';
 
 -- ============================
 --  TRIGGERS: Prevent category/product conflict (Mode 2)
