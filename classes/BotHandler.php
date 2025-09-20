@@ -2996,17 +2996,24 @@ class BotHandler
     //         $this->sendRequest("sendMessage", $data);
     //     }
     // }
-    public function showAdminMainMenu($messageId = null): void
+
+    public function showAdminMainMenu($messageId = null)
     {
         $adminToken = $this->db->createAdminToken($this->chatId);
-        $webAppUrl = '';
+        $webAppUrl = ''; // مقدار پیش‌فرض
+
         if ($adminToken) {
-            $link = AppConfig::get("bot.bot_web");
-            $botId = AppConfig::getCurrentBotId(); // دریافت شناسه ربات فعلی
-            $baseWebAppUrl = $link . '/admin/index.php';
-            // اضافه کردن bot_id به آدرس وب اپ
-            $webAppUrl = $baseWebAppUrl . '?bot_id=' . $botId . '&token=' . $adminToken;
+            // ۱. خواندن آدرس پایه از متغیرهای محیطی (master.env)
+            $baseUrl = $_ENV['APP_URL'] ?? '';
+
+            // ۲. دریافت شناسه متنی ربات (مثلا 'amir')
+            $botIdString = AppConfig::getCurrentBotIdString();
+
+            // ۳. ساخت URL کامل و مطلق برای وب اپ
+            // چون ریشه وب سرور پوشه public است، آدرس از /admin/ شروع می‌شود
+            $webAppUrl = rtrim($baseUrl, '/') . '/admin/index.php?bot_id=' . $botIdString . '&token=' . $adminToken;
         }
+
         $keyboard = [
             'inline_keyboard' => [
                 [
@@ -3015,6 +3022,7 @@ class BotHandler
                 ],
                 [
                     ['text' => '🧾 مدیریت فاکتورها', 'callback_data' => 'admin_manage_invoices'],
+                    // دکمه وب اپ فقط در صورتی نمایش داده می‌شود که URL ساخته شده باشد
                     ['text' => '📊 آمار و گزارشات', 'web_app' => ['url' => $webAppUrl]]
                 ],
                 [
@@ -3026,6 +3034,7 @@ class BotHandler
             ]
         ];
 
+        // --- (بخش نمایش آمار بدون تغییر باقی می‌ماند) ---
         $stats = $this->db->getStatsSummary();
         $jdate = jdf::jdate('l، j F Y');
 

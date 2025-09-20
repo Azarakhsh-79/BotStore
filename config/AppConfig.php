@@ -4,139 +4,148 @@ namespace Config;
 
 use Dotenv\Dotenv;
 use Exception;
-use InvalidPathException;
+use PDO;
 
 class AppConfig
 {
     private static array $loadedConfigs = [];
-    private static ?string $currentBotId = null;
+    private static ?string $currentBotIdString = null;
+    private static ?PDO $masterPdo = null;
 
+    /**
+     * مقداردهی اولیه تنظیمات برای یک bot_id خاص
+     */
     public static function init(string $botId): void
     {
         if (empty($botId) || !preg_match('/^[a-zA-Z0-9_-]+$/', $botId)) {
             throw new Exception("Bot ID is invalid.");
         }
-        self::$currentBotId = $botId;
+        self::$currentBotIdString = $botId;
         self::load();
     }
 
-    public static function getDbConfig()
+    /**
+     * بارگذاری تنظیمات ربات از دیتابیس مرکزی
+     */
+    private static function load(): void
     {
-        $dbConfig = self::get('database');
-        if (empty($dbConfig)) {
-            throw new Exception("Database configuration for bot '" . self::$currentBotId . "' is not loaded or is incomplete.");
+        $botIdString = self::$currentBotIdString;
+        if (isset(self::$loadedConfigs[$botIdString])) {
+            return;
         }
 
-        return [
-            'host'     => $dbConfig['host'] ?? 'localhost',
-            'database' => $dbConfig['database'] ?? '',
-            'username' => $dbConfig['username'] ?? '',
-            'password' => $dbConfig['password'] ?? ''
-        ];
+        try {
+            $masterDbConfig = self::getMasterDbConfig();
+            self::connectMasterDb($masterDbConfig);
+
+            $stmt = self::$masterPdo->prepare("SELECT id, bot_token, bot_name FROM managed_bots WHERE bot_id_string = ? AND status = 'active' LIMIT 1");
+            $stmt->execute([$botIdString]);
+            $botData = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$botData) {
+                throw new Exception("Bot '{$botIdString}' not found or is not active.");
+            }
+
+            self::$loadedConfigs[$botIdString] = [
+                'bot' => [
+                    'id' => (int)$botData['id'], // آیدی عددی ربات
+                    'token' => $botData['bot_token'],
+                    'name' => $botData['bot_name'],
+                ],
+                // تمام ربات‌ها از این پس از یک دیتابیس مشترک استفاده می‌کنند
+                'database' => [
+                    'host' => $masterDbConfig['host'],
+                    'username' => $masterDbConfig['username'],
+                    'password' => $masterDbConfig['password'],
+                    'database' => $masterDbConfig['database'],
+                ]
+            ];
+        } catch (Exception $e) {
+            // لاگ کردن خطا برای دیباگ بهتر
+            error_log("Configuration Error for bot '{$botIdString}': " . $e->getMessage());
+            throw $e;
+        }
     }
+
+    /**
+     * دریافت تنظیمات بر اساس کلید
+     */
     public static function get(?string $key = null, mixed $default = null): mixed
     {
-        if (self::$currentBotId === null) {
+        if (self::$currentBotIdString === null) {
             throw new Exception("AppConfig has not been initialized. Please call AppConfig::init() first.");
         }
 
-        $config = self::$loadedConfigs[self::$currentBotId] ?? null;
+        $config = self::$loadedConfigs[self::$currentBotIdString] ?? null;
 
         if ($key === null) {
             return $config;
         }
 
-        foreach (explode('.', $key) as $segment) {
-            if (is_array($config) && array_key_exists($segment, $config)) {
-                $config = $config[$segment];
+        $keys = explode('.', $key);
+        $value = $config;
+        foreach ($keys as $segment) {
+            if (is_array($value) && array_key_exists($segment, $value)) {
+                $value = $value[$segment];
             } else {
                 return $default;
             }
         }
 
-        return $config;
+        return $value;
     }
 
-
-    private static function load(): void
+    /**
+     * دریافت آیدی عددی ربات فعلی
+     */
+    public static function getCurrentBotId(): ?int
     {
-        if (isset(self::$loadedConfigs[self::$currentBotId])) {
-            return;
-        }
+        return self::get('bot.id');
+    }
 
-        $botId = self::$currentBotId;
-        $envFilePath = __DIR__ . '/' . $botId . '.env';
-
-        try {
-            if (!is_readable($envFilePath)) {
-                throw new Exception("Configuration file '{$botId}.env' not found or is not readable.");
-            }
-
-            $content = file_get_contents($envFilePath);
-            if ($content === false) {
-                throw new Exception("Could not read the content of '{$botId}.env'.");
-            }
-
-            $env = Dotenv::parse($content);
-
-            // Manual validation
-            $required = ['DB_HOST', 'DB_USERNAME', 'DB_DATABASE', 'BOT_TOKEN', 'BOT_LINK'];
-            foreach ($required as $key) {
-                if (empty($env[$key])) {
-                    throw new Exception("Required configuration '{$key}' is missing or empty in '{$botId}.env'.");
-                }
-            }
-            if (!isset($env['DB_PASSWORD'])) {
-                throw new Exception("Required configuration 'DB_PASSWORD' is missing in '{$botId}.env'.");
-            }
-
-            self::$loadedConfigs[$botId] = [
-                'database' => [
-                    'host' => $env['DB_HOST'],
-                    'username' => $env['DB_USERNAME'],
-                    'password' => $env['DB_PASSWORD'],
-                    'database' => $env['DB_DATABASE'],
-                ],
-                'bot' => [
-                    'token' => $env['BOT_TOKEN'],
-                    'merchant_id' => $env['MERCHANT_ID'] ?? '',
-                    'bot_link' => $env['BOT_LINK'],
-                    'bot_web' => $env['BOT_WEB'] ?? '',
-                ],
+    /**
+     * اتصال به دیتابیس اصلی
+     */
+    private static function connectMasterDb(array $dbConfig): void
+    {
+        if (self::$masterPdo === null) {
+            $dsn = "mysql:host={$dbConfig['host']};dbname={$dbConfig['database']};charset=utf8mb4";
+            $options = [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
             ];
-        } catch (Exception $e) {
-            throw new Exception("Configuration Error for bot '{$botId}': " . $e->getMessage());
+            self::$masterPdo = new PDO($dsn, $dbConfig['username'], $dbConfig['password'], $options);
         }
     }
 
+    /**
+     * خواندن تنظیمات دیتابیس اصلی از فایل master.env
+     */
+    // ... کدهای دیگر فایل AppConfig.php ...
+
+    /**
+     * خواندن تنظیمات دیتابیس اصلی و ادمین از فایل master.env
+     */
     public static function getMasterDbConfig(): array
     {
-        // این بخش را جایگزین کنید
-        if (!defined('ROOT_PATH')) {
-            throw new Exception("ROOT_PATH constant is not defined. Please check your bootstrap.php file.");
-        }
-
-        $masterEnvPath = ROOT_PATH;
-        $fullFilePath = $masterEnvPath . DIRECTORY_SEPARATOR . 'master.env'; // استفاده از DIRECTORY_SEPARATOR برای سازگاری بهتر
-
-        if (!file_exists($fullFilePath) || !is_readable($fullFilePath)) {
-            // این پیام خطا مسیر دقیق را به شما نشان می‌دهد
-            throw new Exception("Master configuration file (master.env) not found or is not readable. Tried to access: " . $fullFilePath);
-        }
-
-        $dotenv = Dotenv::createImmutable($masterEnvPath, 'master.env');
+        // مسیر فایل .env را به ریشه پروژه (یک پوشه بالاتر از config) تنظیم می‌کنیم
+        $dotenv = Dotenv::createImmutable(__DIR__ . '/..', 'master.env');
         $dotenv->load();
+
+        // <<-- اصلاحیه اصلی اینجاست
+        // کلیدهای admin_user و admin_pass را به آرایه اضافه می‌کنیم
         return [
-            'host' => $_ENV['MASTER_DB_HOST'] ?? '',
-            'database' => $_ENV['MASTER_DB_DATABASE'] ?? '',
-            'username' => $_ENV['MASTER_DB_USERNAME'] ?? '',
-            'password' => $_ENV['MASTER_DB_PASSWORD'] ?? '',
-            'admin_user' => $_ENV['SUPER_ADMIN_USER'] ?? '',
-            'admin_pass' => $_ENV['SUPER_ADMIN_PASS'] ?? ''
+            'host'       => $_ENV['MASTER_DB_HOST'] ?? 'localhost',
+            'database'   => $_ENV['MASTER_DB_DATABASE'] ?? '',
+            'username'   => $_ENV['MASTER_DB_USERNAME'] ?? 'root',
+            'password'   => $_ENV['MASTER_DB_PASSWORD'] ?? '',
+            'admin_user' => $_ENV['SUPER_ADMIN_USER'] ?? '', // این خط اضافه شد
+            'admin_pass' => $_ENV['SUPER_ADMIN_PASS'] ?? ''  // این خط اضافه شد
         ];
     }
-    public static function getCurrentBotId(): ?string
+    public static function getCurrentBotIdString(): ?string
     {
-        return self::$currentBotId;
+        return self::$currentBotIdString;
     }
+
 }
