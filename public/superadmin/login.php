@@ -5,12 +5,12 @@ use Bot\SuperAdminManager;
 
 session_start();
 $error = '';
+$base_url = '/NewBot/public/superadmin/'; // مسیر صحیح پایه
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $manager = new SuperAdminManager();
     if ($manager->login($_POST['username'], $_POST['password'])) {
-        // <<-- اصلاحیه: هدایت به آدرس مطلق
-        header('Location: /superadmin/');
+        header('Location: ' . $base_url); // هدایت به صفحه اصلی پنل
         exit;
     }
     $error = 'نام کاربری یا رمز عبور اشتباه است.';
@@ -23,15 +23,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <title>ورود به پنل سوپر ادمین</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="/superadmin/styles.css">
+    <link rel="stylesheet" href="<?php echo $base_url; ?>styles.css">
 </head>
 
 <body>
     <div class="login-container">
-        <form method="POST" action="/superadmin/login.php" class="login-form">
+        <form method="POST" action="<?php echo $base_url; ?>login.php" class="login-form">
             <h1>ورود به پنل مدیریت</h1>
             <?php if ($error): ?>
-                <p class="error"><?= $error ?></p>
+                <p class="error"><?php echo $error; ?></p>
             <?php endif; ?>
             <div class="form-group">
                 <label for="username">نام کاربری</label>

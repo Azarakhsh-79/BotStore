@@ -2,150 +2,49 @@
 
 namespace Bot;
 
+use Config\AppConfig;
+use Exception;
+
 class FileHandler
 {
-    /**
-     * لیست فایل‌ها
-     */
-    private array $files = [
-        1 => __DIR__ . '/../parent_ids.json',
-        2 => __DIR__ . '/../states.json',
-        3 => __DIR__ . '/../messages.json',
-    ];
+    private string $stateFilePath;
 
-    private int $defaultFileKey = 1;
-
-   
-    private function getFile($fileKey = null): string
+    public function __construct()
     {
-        $fileKey = $fileKey ?? $this->defaultFileKey;
-
-        if (!isset($this->files[$fileKey])) {
-            throw new \InvalidArgumentException("❌ فایل با شماره {$fileKey} تعریف نشده.");
+        $botId = AppConfig::getCurrentBotId();
+        if (!$botId) {
+            throw new Exception("Bot ID not initialized for FileHandler.");
         }
 
-        $file = $this->files[$fileKey];
+        $dataDir = __DIR__ . '/../data';
+        if (!is_dir($dataDir)) {
+            mkdir($dataDir, 0777, true);
+        }
+        $this->stateFilePath = "{$dataDir}/{$botId}_state.json";
+    }
 
-        if (!file_exists($file)) {
-            file_put_contents($file, json_encode([], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    private function getAllData(): array
+    {
+        if (!file_exists($this->stateFilePath)) {
+            return [];
         }
 
-        return $file;
-    }
-
-    public function addData(int|string $chatId, array $values, $fileKey = null): void
-    {
-        $data = $this->getAllData($fileKey);
-        foreach ($values as $key => $value) {
-
-            if ($key === 'edit_cart_state') {
-                $data[$chatId][$key] = $value;
-                continue; 
-            }
-            
-            if ($value === null) {
-                unset($data[$chatId][$key]);
-                continue;
-            }
-            if (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && !is_array($value)) {
-                $data[$chatId][$key][] = $value;
-            } elseif (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && is_array($value)) {
-                $data[$chatId][$key] = array_replace($data[$chatId][$key], $value);
-            } else {
-                $data[$chatId][$key] = $value;
-            }
-        }
-        $this->saveAllData($data, $fileKey);
-    }
-
-    public function getData(int|string $chatId, string $key, $fileKey = null): mixed
-    {
-        $data = $this->getAllData($fileKey);
-        return $data[$chatId][$key] ?? null;
-    }
-    public function saveState(int|string $chatId, mixed $state, $fileKey = null): void
-    {
-        $data = $this->getAllData($fileKey);
-        $data[$chatId]['state'] = $state;
-        $this->saveAllData($data, $fileKey);
-    }
-
-    public function getState(int|string $chatId, $fileKey = null): mixed
-    {
-        $data = $this->getAllData($fileKey);
-        return $data[$chatId]['state'] ?? null;
-    }
-
-    
-
-      
-    public function addMessageId(int|string $chatId, int|string|array $messageId, $fileKey = null): void
-    {
-        $data = $this->getAllData($fileKey);
-        if (!isset($data[$chatId]['message_ids'])) {
-            $data[$chatId]['message_ids'] = [];
-        }
-        if (is_array($messageId)) {
-            $data[$chatId]['message_ids'] = array_merge($data[$chatId]['message_ids'], $messageId);
-        } else {
-            $data[$chatId]['message_ids'][] = $messageId;
-        }
-        $this->saveAllData($data, $fileKey);
-    }
-
-    public function getMessageIds(int|string $chatId, $fileKey = null): array
-    {
-        $data = $this->getAllData($fileKey);
-        return $data[$chatId]['message_ids'] ?? [];
-    }
-
-    public function clearMessageIds(int|string $chatId, $fileKey = null): void
-    {
-        $data = $this->getAllData($fileKey);
-        unset($data[$chatId]['message_ids']);
-        $this->saveAllData($data, $fileKey);
-    }
-
-    public function saveMessageId(int|string $chatId, int|string $messageId, $fileKey = null): void
-    {
-        $data = $this->getAllData($fileKey);
-        $data[$chatId]['message_id'] = $messageId;
-        $this->saveAllData($data, $fileKey);
-    }
-
-    public function getMessageId(int|string $chatId, $fileKey = null): int|string|null
-    {
-        $data = $this->getAllData($fileKey);
-        return $data[$chatId]['message_id'] ?? null;
-    }
-
-    public function getStateData (int|string $chatId, $fileKey = null): int|string|null
-    {
-        $data = $this->getAllData($fileKey);
-        return $data[$chatId]['state_data'] ?? null;
-    }
-
-    private function getAllData($fileKey = null): array
-    {
-        $file = $this->getFile($fileKey);
-        $content = file_get_contents($file);
+        $content = file_get_contents($this->stateFilePath);
         $data = json_decode($content, true);
 
         if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log("JSON decode error in {$file}: " . json_last_error_msg());
+            error_log("JSON decode error in {$this->stateFilePath}: " . json_last_error_msg());
             return [];
         }
 
         return $data ?? [];
     }
 
-    private function saveAllData(array $data, $fileKey = null): void
+    private function saveAllData(array $data): void
     {
-        $file = $this->getFile($fileKey);
-       
-        $jsonData = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_FORCE_OBJECT);
+        $jsonData = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
-        $fp = fopen($file, 'c+');
+        $fp = fopen($this->stateFilePath, 'c+');
         if ($fp && flock($fp, LOCK_EX)) {
             ftruncate($fp, 0);
             fwrite($fp, $jsonData);
@@ -153,5 +52,95 @@ class FileHandler
             flock($fp, LOCK_UN);
             fclose($fp);
         }
+    }
+
+    // متد اصلی افزودن/بروزرسانی داده
+    public function addData(int|string $chatId, array $values): void
+    {
+        $data = $this->getAllData();
+        if (!isset($data[$chatId])) $data[$chatId] = [];
+
+        foreach ($values as $key => $value) {
+            if ($key === 'edit_cart_state') {
+                $data[$chatId][$key] = $value;
+                continue;
+            }
+
+            if ($value === null) {
+                unset($data[$chatId][$key]);
+                continue;
+            }
+
+            if (isset($data[$chatId][$key]) && is_array($data[$chatId][$key]) && is_array($value)) {
+                $data[$chatId][$key] = array_replace($data[$chatId][$key], $value);
+            } elseif (isset($data[$chatId][$key]) && is_array($data[$chatId][$key])) {
+                $data[$chatId][$key][] = $value;
+            } else {
+                $data[$chatId][$key] = $value;
+            }
+        }
+
+        $this->saveAllData($data);
+    }
+
+    public function getData(int|string $chatId, string $key): mixed
+    {
+        $data = $this->getAllData();
+        return $data[$chatId][$key] ?? null;
+    }
+
+    public function saveState(int|string $chatId, ?string $state): void
+    {
+        $this->addData($chatId, ['state' => $state]);
+    }
+
+    public function getState(int|string $chatId): ?string
+    {
+        return $this->getData($chatId, 'state');
+    }
+
+    public function saveStateData(int|string $chatId, ?string $stateData): void
+    {
+        $this->addData($chatId, ['state_data' => $stateData]);
+    }
+
+    public function getStateData(int|string $chatId): ?string
+    {
+        return $this->getData($chatId, 'state_data');
+    }
+
+    // پیام‌ها
+    public function addMessageId(int|string $chatId, int|string|array $messageId): void
+    {
+        $data = $this->getAllData();
+        if (!isset($data[$chatId]['message_ids'])) $data[$chatId]['message_ids'] = [];
+
+        if (is_array($messageId)) {
+            $data[$chatId]['message_ids'] = array_merge($data[$chatId]['message_ids'], $messageId);
+        } else {
+            $data[$chatId]['message_ids'][] = $messageId;
+        }
+
+        $this->saveAllData($data);
+    }
+
+    public function getMessageIds(int|string $chatId): array
+    {
+        return $this->getData($chatId, 'message_ids') ?? [];
+    }
+
+    public function clearMessageIds(int|string $chatId): void
+    {
+        $this->addData($chatId, ['message_ids' => null]);
+    }
+
+    public function saveMessageId(int|string $chatId, int|string $messageId): void
+    {
+        $this->addData($chatId, ['message_id' => $messageId]);
+    }
+
+    public function getMessageId(int|string $chatId): int|string|null
+    {
+        return $this->getData($chatId, 'message_id');
     }
 }
